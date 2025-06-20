@@ -228,7 +228,151 @@ Just send the contract address (0x...)
         """Handle contract address input"""
         text = update.message.text.strip()
         
-        if re.match(r'^0x[a-fA-F0-9]{40}$', text):
+        if re.match(r'^0x[a-fA-F0-9]{40}
+    
+    async def analyze_contract(self, update: Update, contract_address):
+        """Analyze contract and send results"""
+        processing_msg = await update.message.reply_text("🔍 Analyzing...")
+        
+        try:
+            source_code = self.analyzer.get_contract_source(contract_address)
+            
+            if not source_code:
+                await processing_msg.edit_text("❌ No source code found. Contract not verified?")
+                return
+            
+            data = self.analyzer.analyze_antibot_mechanisms(source_code)
+            response = self.build_response(contract_address, data)
+            
+            # Split long messages if needed
+            if len(response) > 4096:
+                # Send in chunks
+                chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                await processing_msg.edit_text(chunks[0], parse_mode='Markdown')
+                for chunk in chunks[1:]:
+                    await update.message.reply_text(chunk, parse_mode='Markdown')
+            else:
+                await processing_msg.edit_text(response, parse_mode='Markdown')
+            
+        except Exception as e:
+            print(f"Error analyzing contract: {str(e)}")  # For debugging
+            await processing_msg.edit_text(f"❌ Error analyzing contract. Please try again.")
+    
+    def build_response(self, contract_address, data):
+        """Build response message with raw data"""
+        etherscan_link = f"https://etherscan.io/address/{contract_address}#code"
+        
+        response = f"📊 **Contract Analysis**\n"
+        response += f"🔗 [Etherscan]({etherscan_link})\n\n"
+        
+        if not data:
+            response += "✅ **No antibot mechanisms detected**"
+            return response
+        
+        # Initial Taxes
+        if 'initial_taxes' in data:
+            response += "💰 **INITIAL TAXES:**\n"
+            taxes = data['initial_taxes']
+            if 'initial_buy_tax' in taxes:
+                response += f"• Buy tax: {taxes['initial_buy_tax']}%\n"
+            if 'initial_sell_tax' in taxes:
+                response += f"• Sell tax: {taxes['initial_sell_tax']}%\n"
+            if 'tax_reduction_at' in taxes:
+                response += f"• Reduces at: {taxes['tax_reduction_at']} buys\n"
+            if 'taxes_reduce_to_zero' in taxes:
+                response += f"• Reduces to zero: {taxes['taxes_reduce_to_zero']}\n"
+            response += "\n"
+        
+        # Block Limits
+        if 'block_limits' in data:
+            response += "🚫 **BLOCK LIMITS:**\n"
+            limits = data['block_limits']
+            if 'max_txs_per_block' in limits:
+                response += f"• Max TXs per block: {limits['max_txs_per_block']}\n"
+            if 'max_txs_per_origin_per_block' in limits:
+                response += f"• Max wallets per block: {limits['max_txs_per_origin_per_block']}\n"
+            if 'has_block_tracking' in limits:
+                response += f"• Has block tracking: {limits['has_block_tracking']}\n"
+            response += "\n"
+        
+        # Transfer Delays
+        if 'transfer_delays' in data:
+            response += "⏱️ **TRANSFER DELAYS:**\n"
+            delays = data['transfer_delays']
+            if 'transfer_delay_enabled' in delays:
+                response += f"• Delay enabled: {delays['transfer_delay_enabled']}\n"
+            if 'has_timestamp_tracking' in delays:
+                response += f"• Timestamp tracking: {delays['has_timestamp_tracking']}\n"
+            if 'cooldown_timer' in delays:
+                response += f"• Cooldown timer: {delays['cooldown_timer']}\n"
+            response += "\n"
+        
+        # Blacklist Mechanisms
+        if 'blacklist_mechanisms' in data:
+            response += "⚫ **BLACKLIST:**\n"
+            blacklist = data['blacklist_mechanisms']
+            if 'blacklist_count' in blacklist:
+                response += f"• Blacklist count: {blacklist['blacklist_count']}\n"
+            if 'has_buy_count_tracking' in blacklist:
+                response += f"• Buy count tracking: {blacklist['has_buy_count_tracking']}\n"
+            if 'amount_blacklist_threshold' in blacklist:
+                response += f"• Amount threshold: {blacklist['amount_blacklist_threshold']}\n"
+            if 'has_smart_blacklist_logic' in blacklist:
+                response += f"• Smart logic: {blacklist['has_smart_blacklist_logic']}\n"
+            response += "\n"
+        
+        # Timing Restrictions
+        if 'timing_restrictions' in data:
+            response += "⏰ **TIMING:**\n"
+            timing = data['timing_restrictions']
+            if 'launch_block' in timing:
+                response += f"• Launch block: {timing['launch_block']}\n"
+            if 'protected_blocks' in timing:
+                response += f"• Protected blocks: {timing['protected_blocks']}\n"
+            if 'anti_snipe_blocks' in timing:
+                response += f"• Anti-snipe blocks: {timing['anti_snipe_blocks']}\n"
+            response += "\n"
+        
+        # Amount Limits
+        if 'amount_limits' in data:
+            response += "💎 **AMOUNT LIMITS:**\n"
+            amounts = data['amount_limits']
+            if 'max_buy_amount' in amounts:
+                response += f"• Max buy: {amounts['max_buy_amount']}\n"
+            if 'launch_max_buy' in amounts:
+                response += f"• Launch max buy: {amounts['launch_max_buy']}\n"
+            if 'max_wallet' in amounts:
+                response += f"• Max wallet: {amounts['max_wallet']}\n"
+            response += "\n"
+        
+        # Honeypot Flags
+        if 'honeypot_flags' in data and data['honeypot_flags']:
+            response += "🚨 **HONEYPOT FLAGS:**\n"
+            for flag in data['honeypot_flags']:
+                response += f"• {flag}\n"
+        
+        return response
+    
+    def run(self):
+        """Start the bot"""
+        print("🤖 Antibot analyzer bot started...")
+        self.application.run_polling()
+
+# Main execution
+if __name__ == "__main__":
+    # Get environment variables
+    BOT_TOKEN = os.getenv('BOT_TOKEN')
+    ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
+    WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL')
+    
+    if not all([BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL]):
+        print("❌ Missing environment variables!")
+        print("Required: BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL")
+        exit(1)
+    
+    bot = TelegramBot(BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL)
+    bot.run()
+, text):
             await self.analyze_contract(update, text)
         else:
             await update.message.reply_text("❌ Invalid address. Send valid Ethereum address (0x...)")
