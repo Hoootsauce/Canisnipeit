@@ -1,7 +1,8 @@
 import os
 import re
 import requests
-import asyncio
+import threading
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from web3 import Web3
@@ -193,21 +194,19 @@ class TelegramBot:
         self.application = Application.builder().token(bot_token).build()
         self.analyzer = ContractAnalyzer(etherscan_api_key, web3_provider_url)
         self.setup_handlers()
-        self.setup_keepalive()
+        self.start_keepalive()
     
-    def setup_keepalive(self):
-        """Setup keepalive ping every 10 minutes"""
-        async def ping_self():
+    def start_keepalive(self):
+        """Start keepalive in separate thread"""
+        def keepalive_worker():
             while True:
-                try:
-                    # Self-ping to keep service alive
-                    await asyncio.sleep(600)  # 10 minutes
-                    print("🏓 Keepalive ping...")
-                except Exception as e:
-                    print(f"Keepalive error: {e}")
+                time.sleep(600)  # 10 minutes
+                print("🏓 Keepalive ping...")
         
-        # Start keepalive task
-        asyncio.create_task(ping_self())
+        # Start keepalive thread
+        keepalive_thread = threading.Thread(target=keepalive_worker, daemon=True)
+        keepalive_thread.start()
+        print("🏓 Keepalive thread started")
     
     def setup_handlers(self):
         """Set up bot handlers"""
