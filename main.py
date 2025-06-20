@@ -23,6 +23,11 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write('Restarting bot...'.encode('utf-8'))
             # Force restart
             os._exit(0)
+        elif self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write('OK'.encode('utf-8'))
         else:
             self.send_response(200)
             self.send_header('Content-type', 'text/plain; charset=utf-8')
@@ -60,7 +65,6 @@ def keep_alive():
 
 def start_keep_alive():
     """Démarre le keep-alive dans un thread séparé"""
-    import time
     keep_alive()
 
 class ContractAnalyzer:
@@ -115,40 +119,29 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             mechanisms_found = False
             
-            # Transfer delays
-            if "transferDelayEnabled" in source_code and "true" in source_code:
-                result += "⏱️ TRANSFER DELAYS:\n• Transfer delay enabled: true\n"
-                if "holderLastTransferTimestamp" in source_code:
-                    result += "• 1 TX per block per wallet: true\n"
-                result += "\n"
-                mechanisms_found = True
-            
-            # Max buy/wallet limits - détection généraliste pour tous les contrats
+            # Max buy/wallet limits - détection généraliste AMÉLIORÉE
             max_buy_found = False
             
             import re
             
-            # Patterns universels pour tous les types de contrats
+            # Patterns universels incluant les variables obfusquées
             universal_patterns = [
-                # 1. Variables de max buy classiques (division simple)
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
+                # 1. Variables classiques avec division simple
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
                 
                 # 2. Variables avec multiplication puis division : (totalSupply * X) / Y
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
                 
-                # 3. Assignments directs (division)
-                r'(?:maxBuy|maxWallet|maxTransaction|maxTx)Amount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
-                r'_(?:maxBuy|maxWallet|maxTransaction|maxTx)Amount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
+                # 3. Variables avec multiplication directe : totalSupply * X / Y
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
                 
-                # 4. Assignments avec multiplication/division : maxBuy = (totalSupply * X) / Y
-                r'(?:maxBuy|maxWallet|maxTransaction|maxTx).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
+                # 4. Variables obfusquées avec patterns similaires (noms comme _x5KQZM7T4)
+                r'uint256.*?_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
+                r'uint256.*?_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
                 
-                # 5. Dans les constructeurs
-                r'constructor[^}]*?(?:maxBuy|maxWallet|maxTransaction)[^}]*?(?:_totalSupply|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
-                r'constructor[^}]*?(?:maxBuy|maxWallet|maxTransaction)[^}]*?\((?:_totalSupply|MAX_SUPPLY|initialTotalSupply)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
-                
-                # 6. Patterns avec pourcentages en commentaires
-                r'(?:maxBuy|maxWallet|maxTransaction)[^=]*?=\s*(?:_totalSupply|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)[^;]*?;//[^0-9]*?(\d+(?:\.\d+)?)%',
+                # 5. Variables publiques obfusquées
+                r'uint256\s+public\s+_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
+                r'uint256\s+public\s+_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
             ]
             
             found_max_buys = []
@@ -158,40 +151,62 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for match in matches:
                     try:
                         if isinstance(match, tuple):
-                            if len(match) == 3:
-                                # Pattern avec multiplication/division : (totalSupply * X) / Y
+                            if len(match) == 2:
+                                # Pattern avec multiplication/division : (totalSupply * X) / Y ou totalSupply * X / Y
                                 numerator = int(match[0])
                                 denominator = int(match[1])
                                 percentage = (numerator / denominator) * 100
-                                # Validation : pourcentage réaliste (0.01% à 20%)
-                                if 0.01 <= percentage <= 20:
+                                # Validation : pourcentage réaliste (0.01% à 50%)
+                                if 0.01 <= percentage <= 50:
                                     found_max_buys.append(f"{percentage:.2f}%")
-                            elif len(match) == 2:
-                                # Pattern avec commentaire de pourcentage
-                                divisor = int(match[0])
-                                percentage = float(match[1])
-                                # Validation : pourcentage réaliste (0.01% à 20%)
-                                if 0.01 <= percentage <= 20 and 5 <= divisor <= 10000:
-                                    found_max_buys.append(f"{percentage}%")
                         else:
                             # Pattern simple avec diviseur
                             divisor = int(match)
                             # Validation : diviseurs réalistes pour max buy
-                            if 5 <= divisor <= 1000:  # De 0.1% (1000) à 20% (5)
+                            if 2 <= divisor <= 1000:  # De 0.1% (1000) à 50% (2)
                                 percentage = 100 / divisor
-                                if percentage <= 20:  # Max 20% de supply
+                                if percentage <= 50:  # Max 50% de supply
                                     found_max_buys.append(f"{percentage:.2f}%")
                     except (ValueError, IndexError, ZeroDivisionError):
                         continue
             
-            # Supprimer les doublons et prendre les 2 premiers résultats
+            # Chercher aussi manuellement les patterns spécifiques de ce type de contrat
+            # Exemple: uint256 public _x5KQZM7T4 = _tTotal * 2 / 100;
+            specific_patterns = [
+                r'_tTotal\s*\*\s*(\d+)\s*/\s*(\d+)',
+                r'_totalSupply\s*\*\s*(\d+)\s*/\s*(\d+)',
+                r'MAX_SUPPLY\s*\*\s*(\d+)\s*/\s*(\d+)',
+                r'initialTotalSupply\s*\*\s*(\d+)\s*/\s*(\d+)',
+            ]
+            
+            for pattern in specific_patterns:
+                matches = re.findall(pattern, source_code, re.IGNORECASE)
+                for match in matches:
+                    try:
+                        numerator = int(match[0])
+                        denominator = int(match[1])
+                        percentage = (numerator / denominator) * 100
+                        if 0.01 <= percentage <= 50:
+                            found_max_buys.append(f"{percentage:.2f}%")
+                    except:
+                        continue
+            
+            # Supprimer les doublons et prendre les 3 premiers résultats
             if found_max_buys:
-                unique_max_buys = list(set(found_max_buys))[:2]
+                unique_max_buys = list(set(found_max_buys))[:3]
                 result += "💰 MAX BUY LIMITS:\n"
                 for max_buy in unique_max_buys:
                     result += f"• Max buy: {max_buy} of supply\n"
                 result += "\n"
                 max_buy_found = True
+                mechanisms_found = True
+            
+            # Transfer delays
+            if "transferDelayEnabled" in source_code and "true" in source_code:
+                result += "⏱️ TRANSFER DELAYS:\n• Transfer delay enabled: true\n"
+                if "holderLastTransferTimestamp" in source_code:
+                    result += "• 1 TX per block per wallet: true\n"
+                result += "\n"
                 mechanisms_found = True
             
             # Block limits
