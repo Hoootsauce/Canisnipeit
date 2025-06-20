@@ -5,38 +5,43 @@ import threading
 import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from web3 import Web3
 
 class ContractAnalyzer:
-    def __init__(self, etherscan_api_key, web3_provider_url):
+    def __init__(self, etherscan_api_key):
         self.etherscan_api_key = etherscan_api_key
-        self.w3 = Web3(Web3.HTTPProvider(web3_provider_url))
         self.etherscan_base_url = "https://api.etherscan.io/api"
     
-    def get_contract_info(self, contract_address):
-        """Get contract source code only"""
-        params = {
-            'module': 'contract',
-            'action': 'getsourcecode',
-            'address': contract_address,
-            'apikey': self.etherscan_api_key
-        }
-        
-        response = requests.get(self.etherscan_base_url, params=params)
-        data = response.json()
-        
-        if data['status'] != '1' or not data['result'][0]['SourceCode']:
+    def get_contract_source(self, contract_address):
+        """Get contract source code from Etherscan"""
+        try:
+            params = {
+                'module': 'contract',
+                'action': 'getsourcecode',
+                'address': contract_address,
+                'apikey': self.etherscan_api_key
+            }
+            
+            print(f"🔍 Fetching contract: {contract_address}")
+            response = requests.get(self.etherscan_base_url, params=params, timeout=10)
+            data = response.json()
+            
+            if data['status'] != '1' or not data['result'][0]['SourceCode']:
+                print("❌ No source code found")
+                return None
+            
+            print("✅ Source code retrieved")
+            return data['result'][0]['SourceCode']
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
             return None
-        
-        return {
-            'source_code': data['result'][0]['SourceCode']
-        }
     
     def analyze_antibot_mechanisms(self, source_code):
-        """Analyze antibot mechanisms - RAW DATA ONLY"""
+        """Analyze antibot mechanisms from source code"""
         if not source_code:
             return {}
         
+        print("🔍 Analyzing mechanisms...")
         data = {
             'initial_taxes': self._extract_initial_taxes(source_code),
             'block_limits': self._extract_block_limits(source_code),
@@ -46,7 +51,9 @@ class ContractAnalyzer:
             'amount_limits': self._extract_amount_limits(source_code)
         }
         
-        return {k: v for k, v in data.items() if v}
+        result = {k: v for k, v in data.items() if v}
+        print(f"✅ Analysis complete - {len(result)} mechanisms found")
+        return result
     
     def _extract_initial_taxes(self, source_code):
         """Extract initial tax data"""
@@ -64,11 +71,6 @@ class ContractAnalyzer:
         if match:
             data['tax_reduces_after_buys'] = int(match.group(1))
             data['final_buy_tax'] = int(match.group(2))
-        
-        match = re.search(r'block\.number.*?>=.*?launchBlock.*?\+.*?(\d+).*?(?:buyTax|buyFee).*?=.*?(\d+)', source_code, re.IGNORECASE)
-        if match:
-            data['tax_reduces_after_blocks'] = int(match.group(1))
-            data['final_buy_tax_after_blocks'] = int(match.group(2))
         
         if re.search(r'buyCount.*?(?:buyTax|buyFee).*?=.*?0', source_code, re.IGNORECASE):
             data['taxes_go_to_zero'] = True
@@ -109,7 +111,7 @@ class ContractAnalyzer:
         return data
     
     def _extract_blacklist_mechanisms(self, source_code):
-        """Extract blacklist mechanisms - SIMPLIFIED"""
+        """Extract blacklist mechanisms"""
         data = {}
         
         match = re.search(r'blacklistCount.*?=.*?(\d+)', source_code, re.IGNORECASE)
@@ -125,10 +127,6 @@ class ContractAnalyzer:
         """Extract timing-based restrictions"""
         data = {}
         
-        match = re.search(r'launchBlock.*?=.*?(\d+)', source_code, re.IGNORECASE)
-        if match:
-            data['launch_block'] = int(match.group(1))
-        
         match = re.search(r'protectedBlocks.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['protected_blocks'] = int(match.group(1))
@@ -136,109 +134,95 @@ class ContractAnalyzer:
         return data
     
     def _extract_amount_limits(self, source_code):
-        """Extract amount-based limitations and convert to % of supply"""
+        """Extract amount limitations as percentages"""
         data = {}
         
-        total_supply = None
-        supply_match = re.search(r'(?:totalSupply|initialTotalSupply).*?=.*?(\d+).*?\*.*?10\*\*.*?(\d+)', source_code, re.IGNORECASE)
-        if supply_match:
-            base_amount = int(supply_match.group(1))
-            decimals = int(supply_match.group(2))
-            total_supply = base_amount * (10 ** decimals)
-        
-        max_buy_match = re.search(r'maxBuyAmount.*?=.*?(?:\(.*?)?(\d+).*?\*.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
-        if max_buy_match and total_supply:
+        # Simple percentage detection
+        max_buy_match = re.search(r'maxBuyAmount.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
+        if max_buy_match:
             numerator = int(max_buy_match.group(1))
-            multiplier = int(max_buy_match.group(2))
-            denominator = int(max_buy_match.group(3))
-            max_buy_amount = (total_supply * numerator * multiplier) // denominator
-            percentage = (max_buy_amount / total_supply) * 100
+            denominator = int(max_buy_match.group(2))
+            percentage = (numerator / denominator) * 100
             data['max_buy_percent'] = round(percentage, 2)
         
-        max_wallet_match = re.search(r'maxWallet.*?=.*?(?:\(.*?)?(\d+).*?\*.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
-        if max_wallet_match and total_supply:
+        max_wallet_match = re.search(r'maxWallet.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
+        if max_wallet_match:
             numerator = int(max_wallet_match.group(1))
-            multiplier = int(max_wallet_match.group(2))
-            denominator = int(max_wallet_match.group(3))
-            max_wallet_amount = (total_supply * numerator * multiplier) // denominator
-            percentage = (max_wallet_amount / total_supply) * 100
+            denominator = int(max_wallet_match.group(2))
+            percentage = (numerator / denominator) * 100
             data['max_wallet_percent'] = round(percentage, 2)
         
         return data
 
 class TelegramBot:
-    def __init__(self, bot_token, etherscan_api_key, web3_provider_url):
+    def __init__(self, bot_token, etherscan_api_key):
         self.application = Application.builder().token(bot_token).build()
-        self.analyzer = ContractAnalyzer(etherscan_api_key, web3_provider_url)
+        self.analyzer = ContractAnalyzer(etherscan_api_key)
         self.setup_handlers()
         self.start_keepalive()
     
     def start_keepalive(self):
-        """Start keepalive in separate thread"""
-        def keepalive_worker():
+        """Keep bot alive"""
+        def keepalive():
             while True:
-                time.sleep(600)  # 10 minutes
-                print("🏓 Keepalive ping...")
+                time.sleep(600)
+                print("🏓 Keepalive")
         
-        keepalive_thread = threading.Thread(target=keepalive_worker, daemon=True)
-        keepalive_thread.start()
-        print("🏓 Keepalive thread started")
+        threading.Thread(target=keepalive, daemon=True).start()
     
     def setup_handlers(self):
-        """Set up bot handlers"""
+        """Setup bot handlers"""
         print("📝 Setting up handlers...")
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_address))
-        print("✅ Handlers set up successfully")
+        print("✅ Handlers ready")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command"""
-        welcome_message = """🤖 Contract Antibot Analyzer
-
-Send me a contract address and I'll extract:
-• Initial taxes data
-• Block limitations  
-• Transfer delays
-• Blacklist mechanisms
-• Timing restrictions
-• Amount limits
-
-Just send the contract address (0x...)"""
-        
-        await update.message.reply_text(welcome_message)
+        await update.message.reply_text(
+            "🤖 Contract Antibot Analyzer\n\n"
+            "Send me a contract address (0x...) and I'll analyze:\n"
+            "• Initial taxes\n"
+            "• Block limitations\n"
+            "• Transfer delays\n"
+            "• Blacklist mechanisms\n"
+            "• Amount limits"
+        )
     
     async def handle_address(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle contract address input"""
+        """Handle contract address"""
         text = update.message.text.strip()
         
         if len(text) == 42 and text.startswith('0x'):
             await self.analyze_contract(update, text)
         else:
-            await update.message.reply_text("❌ Invalid address. Send valid Ethereum address (0x...)")
+            await update.message.reply_text("❌ Send valid address (0x...)")
     
     async def analyze_contract(self, update: Update, contract_address):
-        """Analyze contract and send results"""
-        processing_msg = await update.message.reply_text("🔍 Analyzing...")
+        """Analyze contract"""
+        msg = await update.message.reply_text("🔍 Analyzing...")
         
         try:
-            contract_info = self.analyzer.get_contract_info(contract_address)
+            print(f"📋 Starting analysis for {contract_address}")
             
-            if not contract_info:
-                await processing_msg.edit_text("❌ No source code found. Contract not verified?")
+            source_code = self.analyzer.get_contract_source(contract_address)
+            if not source_code:
+                await msg.edit_text("❌ No source code found")
                 return
             
-            data = self.analyzer.analyze_antibot_mechanisms(contract_info['source_code'])
+            data = self.analyzer.analyze_antibot_mechanisms(source_code)
             response = self.build_response(contract_address, data)
             
-            await processing_msg.edit_text(response)
+            await msg.edit_text(response)
+            print("✅ Analysis sent to user")
             
         except Exception as e:
-            await processing_msg.edit_text("❌ Error analyzing contract. Please try again.")
+            print(f"❌ Analysis error: {e}")
+            await msg.edit_text("❌ Analysis failed. Try again.")
     
     def build_response(self, contract_address, data):
-        """Build response message with raw data"""
+        """Build response message"""
         etherscan_link = f"https://etherscan.io/address/{contract_address}#code"
-        
         response = f"📊 Contract Analysis\n🔗 Etherscan: {etherscan_link}\n\n"
         
         if not data:
@@ -248,100 +232,93 @@ Just send the contract address (0x...)"""
         if 'initial_taxes' in data:
             response += "💰 INITIAL TAXES:\n"
             taxes = data['initial_taxes']
-            if 'initial_buy_tax' in taxes:
-                response += f"• Initial buy tax: {taxes['initial_buy_tax']}%\n"
-            if 'initial_sell_tax' in taxes:
-                response += f"• Initial sell tax: {taxes['initial_sell_tax']}%\n"
-            if 'tax_reduces_after_buys' in taxes:
-                final_tax = taxes.get('final_buy_tax', 'unknown')
-                response += f"• Tax reduces to {final_tax}% after {taxes['tax_reduces_after_buys']} buys\n"
-            if 'tax_reduces_after_blocks' in taxes:
-                final_tax = taxes.get('final_buy_tax_after_blocks', 'unknown')
-                response += f"• Tax reduces to {final_tax}% after {taxes['tax_reduces_after_blocks']} blocks\n"
-            if 'taxes_go_to_zero' in taxes:
-                response += f"• Taxes go to 0%: {taxes['taxes_go_to_zero']}\n"
+            for key, value in taxes.items():
+                if key == 'initial_buy_tax':
+                    response += f"• Initial buy tax: {value}%\n"
+                elif key == 'initial_sell_tax':
+                    response += f"• Initial sell tax: {value}%\n"
+                elif key == 'tax_reduces_after_buys':
+                    final = taxes.get('final_buy_tax', '?')
+                    response += f"• Reduces to {final}% after {value} buys\n"
+                elif key == 'taxes_go_to_zero':
+                    response += f"• Taxes go to 0%: {value}\n"
             response += "\n"
         
         if 'block_limits' in data:
             response += "🚫 BLOCK LIMITS:\n"
             limits = data['block_limits']
-            if 'max_txs_per_block' in limits:
-                response += f"• Max TXs per block: {limits['max_txs_per_block']}\n"
-            if 'max_txs_per_origin_per_block' in limits:
-                response += f"• Max wallets per block: {limits['max_txs_per_origin_per_block']}\n"
-            if 'has_block_tracking' in limits:
-                response += f"• Has block tracking: {limits['has_block_tracking']}\n"
+            for key, value in limits.items():
+                if key == 'max_txs_per_block':
+                    response += f"• Max TXs per block: {value}\n"
+                elif key == 'max_txs_per_origin_per_block':
+                    response += f"• Max wallets per block: {value}\n"
+                elif key == 'has_block_tracking':
+                    response += f"• Has block tracking: {value}\n"
             response += "\n"
         
         if 'transfer_delays' in data:
             response += "⏱️ TRANSFER DELAYS:\n"
             delays = data['transfer_delays']
-            if 'transfer_delay_enabled' in delays:
-                response += f"• Delay enabled: {delays['transfer_delay_enabled']}\n"
-            if 'one_tx_per_block_per_wallet' in delays:
-                response += f"• 1 TX per block per wallet: {delays['one_tx_per_block_per_wallet']}\n"
-            if 'cooldown_timer_seconds' in delays:
-                response += f"• Cooldown: {delays['cooldown_timer_seconds']} seconds\n"
+            for key, value in delays.items():
+                if key == 'transfer_delay_enabled':
+                    response += f"• Delay enabled: {value}\n"
+                elif key == 'one_tx_per_block_per_wallet':
+                    response += f"• 1 TX per block per wallet: {value}\n"
+                elif key == 'cooldown_timer_seconds':
+                    response += f"• Cooldown: {value} seconds\n"
             response += "\n"
         
         if 'blacklist_mechanisms' in data:
             response += "⚫ BLACKLIST:\n"
             blacklist = data['blacklist_mechanisms']
-            if 'first_buyers_blacklisted' in blacklist:
-                response += f"• First {blacklist['first_buyers_blacklisted']} buyers blacklisted\n"
-            if 'has_buy_count_tracking' in blacklist:
-                response += f"• Buy count tracking: {blacklist['has_buy_count_tracking']}\n"
+            for key, value in blacklist.items():
+                if key == 'first_buyers_blacklisted':
+                    response += f"• First {value} buyers blacklisted\n"
+                elif key == 'has_buy_count_tracking':
+                    response += f"• Buy count tracking: {value}\n"
             response += "\n"
         
         if 'timing_restrictions' in data:
             response += "⏰ TIMING:\n"
             timing = data['timing_restrictions']
-            if 'launch_block' in timing:
-                response += f"• Launch block: {timing['launch_block']}\n"
-            if 'protected_blocks' in timing:
-                response += f"• Protected blocks: {timing['protected_blocks']}\n"
+            for key, value in timing.items():
+                if key == 'protected_blocks':
+                    response += f"• Protected blocks: {value}\n"
             response += "\n"
         
         if 'amount_limits' in data:
             response += "💎 AMOUNT LIMITS:\n"
             amounts = data['amount_limits']
-            if 'max_buy_percent' in amounts:
-                response += f"• Max buy: {amounts['max_buy_percent']}% of supply\n"
-            if 'max_wallet_percent' in amounts:
-                response += f"• Max wallet: {amounts['max_wallet_percent']}% of supply\n"
+            for key, value in amounts.items():
+                if key == 'max_buy_percent':
+                    response += f"• Max buy: {value}% of supply\n"
+                elif key == 'max_wallet_percent':
+                    response += f"• Max wallet: {value}% of supply\n"
             response += "\n"
         
         return response
     
     def run(self):
-        """Start the bot with keepalive"""
-        print("🤖 Antibot analyzer bot started...")
-        print("🏓 Keepalive enabled - bot will stay online 24/7")
+        """Start bot"""
+        print("🤖 Bot starting...")
         self.application.run_polling()
 
 if __name__ == "__main__":
-    print("🔍 Starting bot initialization...")
+    print("🔍 Initializing...")
     
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
-    WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL')
     
-    print(f"📋 Environment check:")
-    print(f"- BOT_TOKEN: {'✅ Set' if BOT_TOKEN else '❌ Missing'}")
-    print(f"- ETHERSCAN_API_KEY: {'✅ Set' if ETHERSCAN_API_KEY else '❌ Missing'}")
-    print(f"- WEB3_PROVIDER_URL: {'✅ Set' if WEB3_PROVIDER_URL else '❌ Missing'}")
+    print(f"📋 Environment:")
+    print(f"- BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
+    print(f"- ETHERSCAN_API_KEY: {'✅' if ETHERSCAN_API_KEY else '❌'}")
     
-    if not all([BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL]):
-        print("❌ Missing environment variables!")
-        print("Required: BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL")
+    if not all([BOT_TOKEN, ETHERSCAN_API_KEY]):
+        print("❌ Missing variables!")
         exit(1)
     
-    print("🚀 Creating bot instance...")
     try:
-        bot = TelegramBot(BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL)
-        print("✅ Bot instance created successfully")
+        bot = TelegramBot(BOT_TOKEN, ETHERSCAN_API_KEY)
         bot.run()
     except Exception as e:
-        print(f"❌ Error creating bot: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error: {e}")
