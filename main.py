@@ -123,6 +123,65 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result += "\n"
                 mechanisms_found = True
             
+            # Max buy limits
+            max_buy_found = False
+            if "maxBuyAmount" in source_code or "_maxBuyAmount" in source_code or "maxTransactionAmount" in source_code:
+                result += "💰 MAX BUY LIMITS:\n"
+                import re
+                
+                # Chercher différents patterns de max buy
+                patterns = [
+                    r'maxBuyAmount.*?=.*?(\d+)',
+                    r'_maxBuyAmount.*?=.*?(\d+)', 
+                    r'maxTransactionAmount.*?=.*?(\d+)',
+                    r'maxBuy.*?=.*?(\d+)',
+                    r'_maxTxAmount.*?=.*?(\d+)'
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, source_code)
+                    if match:
+                        max_buy_value = int(match.group(1))
+                        
+                        # Calculer le pourcentage si on peut détecter le total supply
+                        total_supply_match = re.search(r'_totalSupply.*?=.*?(\d+)', source_code)
+                        if total_supply_match:
+                            total_supply = int(total_supply_match.group(1))
+                            if total_supply > 0:
+                                max_buy_percent = (max_buy_value / total_supply) * 100
+                                result += f"• Max buy: {max_buy_percent:.2f}% of supply\n"
+                            else:
+                                result += f"• Max buy: {max_buy_value} tokens\n"
+                        else:
+                            # Essayer de détecter des pourcentages hardcodés
+                            if max_buy_value <= 100:
+                                result += f"• Max buy: {max_buy_value}% of supply\n"
+                            else:
+                                result += f"• Max buy: {max_buy_value} tokens\n"
+                        
+                        max_buy_found = True
+                        break
+                
+                if not max_buy_found:
+                    # Chercher des patterns de pourcentage direct
+                    percent_patterns = [
+                        r'maxBuy.*?(\d+)\s*%',
+                        r'maxTransaction.*?(\d+)\s*%',
+                        r'(\d+)\s*%.*?maxBuy'
+                    ]
+                    
+                    for pattern in percent_patterns:
+                        match = re.search(pattern, source_code)
+                        if match:
+                            percent = int(match.group(1))
+                            result += f"• Max buy: {percent}% of supply\n"
+                            max_buy_found = True
+                            break
+                
+                if max_buy_found:
+                    result += "\n"
+                    mechanisms_found = True
+            
             # Block limits
             if "maxBuyTxsPerBlock" in source_code:
                 result += "🚫 BLOCK LIMITS:\n"
