@@ -26,9 +26,24 @@ class ContractAnalyzer:
         data = response.json()
         
         if data['status'] == '1' and data['result'][0]['SourceCode']:
+            source_code = data['result'][0]['SourceCode']
+            contract_name = data['result'][0]['ContractName']
+            
+            # Try to extract token name from source code if contract name is generic
+            if not contract_name or contract_name in ['Contract', 'Token']:
+                # Look for token name in constructor or name function
+                name_match = re.search(r'name.*?=.*?"([^"]+)"', source_code, re.IGNORECASE)
+                if name_match:
+                    contract_name = name_match.group(1)
+                else:
+                    # Look for contract declaration
+                    contract_match = re.search(r'contract\s+(\w+)', source_code, re.IGNORECASE)
+                    if contract_match:
+                        contract_name = contract_match.group(1)
+            
             contract_info = {
-                'source_code': data['result'][0]['SourceCode'],
-                'contract_name': data['result'][0]['ContractName']
+                'source_code': source_code,
+                'contract_name': contract_name or 'Unknown'
             }
             return contract_info
         return None
@@ -263,7 +278,7 @@ Just send the contract address (0x...)"""
         """Build response message with raw data"""
         etherscan_link = f"https://etherscan.io/address/{contract_address}#code"
         
-        response = f"📊 **Contract Analysis - {contract_name}**\n🔗 Etherscan: {etherscan_link}\n\n"
+        response = f"📊 Contract Analysis - {contract_name}\n🔗 Etherscan: {etherscan_link}\n\n"
         
         if not data:
             response += "✅ No antibot mechanisms detected"
