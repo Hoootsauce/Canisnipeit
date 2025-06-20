@@ -117,89 +117,100 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Analyze antibot mechanisms
             result = f"📊 Contract Analysis\n🔗 https://etherscan.io/address/{text}#code\n\n"
             
+            # MÉCANISMES ANTIBOT (séparés des max buy)
             mechanisms_found = False
             
-            # Max buy/wallet limits - détection généraliste AMÉLIORÉE
-            max_buy_found = False
-            
+            # Max buy/wallet limits - TOUJOURS affiché avec calcul des %
             import re
             
-            # Patterns universels incluant les variables obfusquées
-            universal_patterns = [
+            # D'abord trouver le total supply du contrat
+            total_supply_patterns = [
+                r'uint256.*?(?:totalSupply|_totalSupply|MAX_SUPPLY|initialTotalSupply|_tTotal).*?=\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|\d+)',
+                r'uint256.*?(?:totalSupply|_totalSupply|MAX_SUPPLY|initialTotalSupply|_tTotal).*?=\s*(\d+)',
+                r'_mint\s*\([^,]*?,\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|\d+)',
+            ]
+            
+            total_supply_value = None
+            for pattern in total_supply_patterns:
+                matches = re.findall(pattern, source_code, re.IGNORECASE)
+                if matches:
+                    try:
+                        total_supply_value = int(matches[0])
+                        break
+                    except:
+                        continue
+            
+            # Patterns pour détecter TOUS les types de max buy/wallet
+            max_buy_patterns = [
                 # 1. Variables classiques avec division simple
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
                 
-                # 2. Variables avec multiplication puis division : (totalSupply * X) / Y
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
+                # 2. Variables avec (totalSupply * X) / Y
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
                 
-                # 3. Variables avec multiplication directe : totalSupply * X / Y
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
+                # 3. Variables avec totalSupply * X / Y
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
                 
-                # 4. Variables obfusquées avec patterns similaires (noms comme _x5KQZM7T4)
+                # 4. Variables obfusquées
                 r'uint256.*?_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
                 r'uint256.*?_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
                 
-                # 5. Variables publiques obfusquées
-                r'uint256\s+public\s+_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
-                r'uint256\s+public\s+_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
-            ]
-            
-            found_max_buys = []
-            
-            for pattern in universal_patterns:
-                matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE)
-                for match in matches:
-                    try:
-                        if isinstance(match, tuple):
-                            if len(match) == 2:
-                                # Pattern avec multiplication/division : (totalSupply * X) / Y ou totalSupply * X / Y
-                                numerator = int(match[0])
-                                denominator = int(match[1])
-                                percentage = (numerator / denominator) * 100
-                                # Validation : pourcentage réaliste (0.01% à 50%)
-                                if 0.01 <= percentage <= 50:
-                                    found_max_buys.append(f"{percentage:.2f}%")
-                        else:
-                            # Pattern simple avec diviseur
-                            divisor = int(match)
-                            # Validation : diviseurs réalistes pour max buy
-                            if 2 <= divisor <= 1000:  # De 0.1% (1000) à 50% (2)
-                                percentage = 100 / divisor
-                                if percentage <= 50:  # Max 50% de supply
-                                    found_max_buys.append(f"{percentage:.2f}%")
-                    except (ValueError, IndexError, ZeroDivisionError):
-                        continue
-            
-            # Chercher aussi manuellement les patterns spécifiques de ce type de contrat
-            # Exemple: uint256 public _x5KQZM7T4 = _tTotal * 2 / 100;
-            specific_patterns = [
+                # 5. Valeurs fixes avec decimals() : 250000*10**decimals()
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|transactionLimit).*?=\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|\d+)',
+                
+                # 6. Patterns directs avec supply
                 r'_tTotal\s*\*\s*(\d+)\s*/\s*(\d+)',
                 r'_totalSupply\s*\*\s*(\d+)\s*/\s*(\d+)',
                 r'MAX_SUPPLY\s*\*\s*(\d+)\s*/\s*(\d+)',
                 r'initialTotalSupply\s*\*\s*(\d+)\s*/\s*(\d+)',
             ]
             
-            for pattern in specific_patterns:
-                matches = re.findall(pattern, source_code, re.IGNORECASE)
+            found_max_buys = []
+            
+            for pattern in max_buy_patterns:
+                matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE)
                 for match in matches:
                     try:
-                        numerator = int(match[0])
-                        denominator = int(match[1])
-                        percentage = (numerator / denominator) * 100
-                        if 0.01 <= percentage <= 50:
-                            found_max_buys.append(f"{percentage:.2f}%")
-                    except:
+                        if isinstance(match, tuple):
+                            if len(match) == 2:
+                                # Pattern avec multiplication/division
+                                numerator = int(match[0])
+                                denominator = int(match[1])
+                                percentage = (numerator / denominator) * 100
+                                if 0.001 <= percentage <= 50:
+                                    found_max_buys.append(f"{percentage:.3f}%")
+                        else:
+                            # Pattern simple
+                            value = int(match)
+                            if value >= 1000 and total_supply_value:
+                                # Valeur fixe comme 250000 - calculer le %
+                                percentage = (value / total_supply_value) * 100
+                                if 0.001 <= percentage <= 50:
+                                    found_max_buys.append(f"{percentage:.3f}%")
+                            elif 2 <= value <= 1000:
+                                # Diviseur
+                                percentage = 100 / value
+                                if percentage <= 50:
+                                    found_max_buys.append(f"{percentage:.3f}%")
+                    except (ValueError, IndexError, ZeroDivisionError):
                         continue
             
-            # Supprimer les doublons et prendre les 3 premiers résultats
+            # TOUJOURS afficher les max buy
+            result += "💰 MAX BUY LIMITS:\n"
             if found_max_buys:
-                unique_max_buys = list(set(found_max_buys))[:3]
-                result += "💰 MAX BUY LIMITS:\n"
-                for max_buy in unique_max_buys:
+                # Supprimer les doublons mais garder l'ordre
+                seen = set()
+                unique_max_buys = []
+                for item in found_max_buys:
+                    if item not in seen:
+                        seen.add(item)
+                        unique_max_buys.append(item)
+                
+                for max_buy in unique_max_buys[:3]:  # Max 3 résultats
                     result += f"• Max buy: {max_buy} of supply\n"
-                result += "\n"
-                max_buy_found = True
-                mechanisms_found = True
+            else:
+                result += "• No max buy limits detected in source code\n"
+            result += "\n"
             
             # Transfer delays
             if "transferDelayEnabled" in source_code and "true" in source_code:
@@ -255,7 +266,8 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mechanisms_found = True
             
             if not mechanisms_found:
-                result += "✅ No antibot mechanisms detected"
+                result += "✅ No ANTIBOT mechanisms detected\n"
+                result += "(Max buy limits are not antibot mechanisms)"
             
             await msg.edit_text(result)
             print(f"✅ Analysis completed for {text}")
