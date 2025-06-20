@@ -38,8 +38,7 @@ class ContractAnalyzer:
             'transfer_delays': self._extract_transfer_delays(source_code),
             'blacklist_mechanisms': self._extract_blacklist_mechanisms(source_code),
             'timing_restrictions': self._extract_timing_restrictions(source_code),
-            'amount_limits': self._extract_amount_limits(source_code),
-            'honeypot_flags': self._extract_honeypot_flags(source_code)
+            'amount_limits': self._extract_amount_limits(source_code)
         }
         
         return {k: v for k, v in data.items() if v}
@@ -58,14 +57,21 @@ class ContractAnalyzer:
         if match:
             data['initial_sell_tax'] = int(match.group(1))
         
-        # Tax countdown/reduction trigger
-        match = re.search(r'buyCount.*?(\d+)', source_code, re.IGNORECASE)
+        # Tax reduction after X buys
+        match = re.search(r'buyCount.*?>=.*?(\d+).*?(?:buyTax|buyFee).*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
-            data['tax_reduction_at'] = int(match.group(1))
+            data['tax_reduces_after_buys'] = int(match.group(1))
+            data['final_buy_tax'] = int(match.group(2))
         
-        # Detect if taxes reduce to zero
-        if re.search(r'buyCount.*?buyTax.*?=.*?0', source_code, re.IGNORECASE):
-            data['taxes_reduce_to_zero'] = True
+        # Tax reduction after X blocks
+        match = re.search(r'block\.number.*?>=.*?launchBlock.*?\+.*?(\d+).*?(?:buyTax|buyFee).*?=.*?(\d+)', source_code, re.IGNORECASE)
+        if match:
+            data['tax_reduces_after_blocks'] = int(match.group(1))
+            data['final_buy_tax_after_blocks'] = int(match.group(2))
+        
+        # Detect if taxes reduce to zero specifically
+        if re.search(r'buyCount.*?(?:buyTax|buyFee).*?=.*?0', source_code, re.IGNORECASE):
+            data['taxes_go_to_zero'] = True
         
         return data
     
@@ -97,38 +103,29 @@ class ContractAnalyzer:
         if re.search(r'transferDelayEnabled.*?=.*?true', source_code, re.IGNORECASE):
             data['transfer_delay_enabled'] = True
         
-        # Holder last transfer timestamp
+        # Holder last transfer timestamp (1 TX per block per wallet)
         if re.search(r'holderLastTransferTimestamp', source_code, re.IGNORECASE):
-            data['has_timestamp_tracking'] = True
+            data['one_tx_per_block_per_wallet'] = True
         
         # Cooldown timer
         match = re.search(r'cooldownTimer.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
-            data['cooldown_timer'] = int(match.group(1))
+            data['cooldown_timer_seconds'] = int(match.group(1))
         
         return data
     
     def _extract_blacklist_mechanisms(self, source_code):
-        """Extract blacklist mechanisms"""
+        """Extract blacklist mechanisms - SIMPLIFIED"""
         data = {}
         
-        # Blacklist count
+        # Blacklist count (most important)
         match = re.search(r'blacklistCount.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
-            data['blacklist_count'] = int(match.group(1))
+            data['first_buyers_blacklisted'] = int(match.group(1))
         
         # Current buy count tracking
         if re.search(r'currentBuyCount', source_code, re.IGNORECASE):
             data['has_buy_count_tracking'] = True
-        
-        # Amount-based blacklist threshold
-        match = re.search(r'amount.*?>.*?(\d+)', source_code, re.IGNORECASE)
-        if match:
-            data['amount_blacklist_threshold'] = match.group(1)
-        
-        # Smart blacklist logic detection
-        if re.search(r'currentBuyCount.*?blacklistCount.*?bots', source_code, re.IGNORECASE):
-            data['has_smart_blacklist_logic'] = True
         
         return data
     
@@ -149,35 +146,42 @@ class ContractAnalyzer:
         return data
     
     def _extract_amount_limits(self, source_code):
-        """Extract amount-based limitations"""
+        """Extract amount-based limitations and convert to % of supply"""
         data = {}
         
+        # Get total supply first
+        total_supply = None
+        supply_match = re.search(r'(?:totalSupply|initialTotalSupply).*?=.*?(\d+).*?\*.*?10\*\*.*?(\d+)', source_code, re.IGNORECASE)
+        if supply_match:
+            base_amount = int(supply_match.group(1))
+            decimals = int(supply_match.group(2))
+            total_supply = base_amount * (10 ** decimals)
+        
         # Max buy amount
-        match = re.search(r'maxBuyAmount.*?=.*?([^;]+)', source_code, re.IGNORECASE)
-        if match:
-            data['max_buy_amount'] = match.group(1).strip()
+        max_buy_match = re.search(r'maxBuyAmount.*?=.*?(?:\(.*?)?(\d+).*?\*.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
+        if max_buy_match and total_supply:
+            numerator = int(max_buy_match.group(1))
+            multiplier = int(max_buy_match.group(2))
+            denominator = int(max_buy_match.group(3))
+            max_buy_amount = (total_supply * numerator * multiplier) // denominator
+            percentage = (max_buy_amount / total_supply) * 100
+            data['max_buy_percent'] = round(percentage, 2)
         
         # Max wallet
-        match = re.search(r'maxWallet.*?=.*?([^;]+)', source_code, re.IGNORECASE)
-        if match:
-            data['max_wallet'] = match.group(1).strip()
+        max_wallet_match = re.search(r'maxWallet.*?=.*?(?:\(.*?)?(\d+).*?\*.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
+        if max_wallet_match and total_supply:
+            numerator = int(max_wallet_match.group(1))
+            multiplier = int(max_wallet_match.group(2))
+            denominator = int(max_wallet_match.group(3))
+            max_wallet_amount = (total_supply * numerator * multiplier) // denominator
+            percentage = (max_wallet_amount / total_supply) * 100
+            data['max_wallet_percent'] = round(percentage, 2)
         
         return data
     
     def _extract_honeypot_flags(self, source_code):
-        """Extract potential honeypot indicators"""
-        flags = []
-        
-        if re.search(r'onlyOwner.*transfer', source_code, re.IGNORECASE):
-            flags.append("owner_can_control_transfers")
-        
-        if re.search(r'function.*pause', source_code, re.IGNORECASE):
-            flags.append("has_pause_function")
-        
-        if re.search(r'setFee', source_code, re.IGNORECASE):
-            flags.append("can_modify_fees")
-        
-        return flags
+        """This function is removed"""
+        return []
 
 class TelegramBot:
     def __init__(self, bot_token, etherscan_api_key, web3_provider_url):
@@ -251,13 +255,17 @@ Just send the contract address (0x...)"""
             response += "💰 INITIAL TAXES:\n"
             taxes = data['initial_taxes']
             if 'initial_buy_tax' in taxes:
-                response += f"• Buy tax: {taxes['initial_buy_tax']}%\n"
+                response += f"• Initial buy tax: {taxes['initial_buy_tax']}%\n"
             if 'initial_sell_tax' in taxes:
-                response += f"• Sell tax: {taxes['initial_sell_tax']}%\n"
-            if 'tax_reduction_at' in taxes:
-                response += f"• Reduces at: {taxes['tax_reduction_at']} buys\n"
-            if 'taxes_reduce_to_zero' in taxes:
-                response += f"• Reduces to zero: {taxes['taxes_reduce_to_zero']}\n"
+                response += f"• Initial sell tax: {taxes['initial_sell_tax']}%\n"
+            if 'tax_reduces_after_buys' in taxes:
+                final_tax = taxes.get('final_buy_tax', 'unknown')
+                response += f"• Tax reduces to {final_tax}% after {taxes['tax_reduces_after_buys']} buys\n"
+            if 'tax_reduces_after_blocks' in taxes:
+                final_tax = taxes.get('final_buy_tax_after_blocks', 'unknown')
+                response += f"• Tax reduces to {final_tax}% after {taxes['tax_reduces_after_blocks']} blocks\n"
+            if 'taxes_go_to_zero' in taxes:
+                response += f"• Taxes go to 0%: {taxes['taxes_go_to_zero']}\n"
             response += "\n"
         
         # Block Limits
@@ -278,24 +286,20 @@ Just send the contract address (0x...)"""
             delays = data['transfer_delays']
             if 'transfer_delay_enabled' in delays:
                 response += f"• Delay enabled: {delays['transfer_delay_enabled']}\n"
-            if 'has_timestamp_tracking' in delays:
-                response += f"• Timestamp tracking: {delays['has_timestamp_tracking']}\n"
-            if 'cooldown_timer' in delays:
-                response += f"• Cooldown timer: {delays['cooldown_timer']}\n"
+            if 'one_tx_per_block_per_wallet' in delays:
+                response += f"• 1 TX per block per wallet: {delays['one_tx_per_block_per_wallet']}\n"
+            if 'cooldown_timer_seconds' in delays:
+                response += f"• Cooldown: {delays['cooldown_timer_seconds']} seconds\n"
             response += "\n"
         
         # Blacklist Mechanisms
         if 'blacklist_mechanisms' in data:
             response += "⚫ BLACKLIST:\n"
             blacklist = data['blacklist_mechanisms']
-            if 'blacklist_count' in blacklist:
-                response += f"• Blacklist count: {blacklist['blacklist_count']}\n"
+            if 'first_buyers_blacklisted' in blacklist:
+                response += f"• First {blacklist['first_buyers_blacklisted']} buyers blacklisted\n"
             if 'has_buy_count_tracking' in blacklist:
                 response += f"• Buy count tracking: {blacklist['has_buy_count_tracking']}\n"
-            if 'amount_blacklist_threshold' in blacklist:
-                response += f"• Amount threshold: {blacklist['amount_blacklist_threshold']}\n"
-            if 'has_smart_blacklist_logic' in blacklist:
-                response += f"• Smart logic: {blacklist['has_smart_blacklist_logic']}\n"
             response += "\n"
         
         # Timing Restrictions
@@ -312,17 +316,11 @@ Just send the contract address (0x...)"""
         if 'amount_limits' in data:
             response += "💎 AMOUNT LIMITS:\n"
             amounts = data['amount_limits']
-            if 'max_buy_amount' in amounts:
-                response += f"• Max buy: {amounts['max_buy_amount']}\n"
-            if 'max_wallet' in amounts:
-                response += f"• Max wallet: {amounts['max_wallet']}\n"
+            if 'max_buy_percent' in amounts:
+                response += f"• Max buy: {amounts['max_buy_percent']}% of supply\n"
+            if 'max_wallet_percent' in amounts:
+                response += f"• Max wallet: {amounts['max_wallet_percent']}% of supply\n"
             response += "\n"
-        
-        # Honeypot Flags
-        if 'honeypot_flags' in data and data['honeypot_flags']:
-            response += "🚨 HONEYPOT FLAGS:\n"
-            for flag in data['honeypot_flags']:
-                response += f"• {flag}\n"
         
         return response
     
