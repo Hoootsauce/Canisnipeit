@@ -117,52 +117,76 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Analyze antibot mechanisms
             result = f"📊 Contract Analysis\n🔗 https://etherscan.io/address/{text}#code\n\n"
             
-            # MÉCANISMES ANTIBOT (séparés des max buy)
-            mechanisms_found = False
-            
-            # Max buy/wallet limits - TOUJOURS affiché avec calcul des %
             import re
             
-            # D'abord trouver le total supply du contrat
+            # 1. DETECTER LE TOTAL SUPPLY AUTOMATIQUEMENT
+            total_supply_value = None
+            decimals_value = 18  # valeur par défaut
+            
+            # Patterns pour trouver le total supply
             total_supply_patterns = [
-                r'uint256.*?(?:totalSupply|_totalSupply|MAX_SUPPLY|initialTotalSupply|_tTotal).*?=\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|\d+)',
+                r'uint256.*?(?:totalSupply|_totalSupply|MAX_SUPPLY|initialTotalSupply|_tTotal).*?=\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|(\d+))',
+                r'uint256.*?(?:totalSupply|_totalSupply|MAX_SUPPLY|initialTotalSupply|_tTotal).*?=\s*(\d+)e(\d+)',
+                r'_mint\s*\([^,]*?,\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|(\d+))',
                 r'uint256.*?(?:totalSupply|_totalSupply|MAX_SUPPLY|initialTotalSupply|_tTotal).*?=\s*(\d+)',
-                r'_mint\s*\([^,]*?,\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|\d+)',
             ]
             
-            total_supply_value = None
             for pattern in total_supply_patterns:
                 matches = re.findall(pattern, source_code, re.IGNORECASE)
                 if matches:
                     try:
-                        total_supply_value = int(matches[0])
+                        match = matches[0]
+                        if isinstance(match, tuple):
+                            if len(match) == 2 and match[1]:  # avec decimals
+                                total_supply_value = int(match[0])
+                                decimals_value = int(match[1]) if match[1].isdigit() else 18
+                            else:
+                                total_supply_value = int(match[0])
+                        else:
+                            total_supply_value = int(match)
                         break
                     except:
                         continue
             
-            # Patterns pour détecter TOUS les types de max buy/wallet
+            # Patterns pour détecter les decimals séparément si pas trouvé
+            if decimals_value == 18:
+                decimals_patterns = [
+                    r'uint8.*?(?:decimals|_decimals).*?=\s*(\d+)',
+                    r'function\s+decimals\(\)\s*.*?returns?\s*\(.*?\)\s*\{\s*return\s*(\d+)',
+                ]
+                
+                for pattern in decimals_patterns:
+                    matches = re.findall(pattern, source_code, re.IGNORECASE)
+                    if matches:
+                        try:
+                            decimals_value = int(matches[0])
+                            break
+                        except:
+                            continue
+            
+            # 2. PATTERNS AMELIORES POUR MAX BUY DETECTION
             max_buy_patterns = [
-                # 1. Variables classiques avec division simple
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
+                # Pattern 1: Variables avec division simple (ex: totalSupply / 400)
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit|maxTransactionLimit).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
                 
-                # 2. Variables avec (totalSupply * X) / Y
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
+                # Pattern 2: Variables avec multiplication/division (ex: totalSupply * 25 / 10000)
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit|maxTransactionLimit).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit|maxTransactionLimit).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
                 
-                # 3. Variables avec totalSupply * X / Y
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
+                # Pattern 3: Valeurs fixes avec decimals (ex: 250000*10**decimals())
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|_maxBuy|_maxWallet|transactionLimit|maxTransactionLimit).*?=\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|(\d+))',
                 
-                # 4. Variables obfusquées
-                r'uint256.*?_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
-                r'uint256.*?_[a-zA-Z0-9]{5,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
+                # Pattern 4: Variables obfusquées
+                r'uint256.*?_[a-zA-Z0-9]{3,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
+                r'uint256.*?_[a-zA-Z0-9]{3,15}\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
                 
-                # 5. Valeurs fixes avec decimals() : 250000*10**decimals()
-                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx|transactionLimit).*?=\s*(\d+)\s*\*\s*10\s*\*\*\s*(?:decimals\(\)|_decimals|\d+)',
+                # Pattern 5: Dans les fonctions require() ou conditions
+                r'require\s*\([^)]*amount\s*<=?\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
+                r'require\s*\([^)]*amount\s*<=?\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
                 
-                # 6. Patterns directs avec supply
-                r'_tTotal\s*\*\s*(\d+)\s*/\s*(\d+)',
-                r'_totalSupply\s*\*\s*(\d+)\s*/\s*(\d+)',
-                r'MAX_SUPPLY\s*\*\s*(\d+)\s*/\s*(\d+)',
-                r'initialTotalSupply\s*\*\s*(\d+)\s*/\s*(\d+)',
+                # Pattern 6: Patterns directs
+                r'(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*/\s*(\d+)',
+                r'(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply|_tTotal)\s*\*\s*(\d+)\s*/\s*(\d+)',
             ]
             
             found_max_buys = []
@@ -173,32 +197,35 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         if isinstance(match, tuple):
                             if len(match) == 2:
-                                # Pattern avec multiplication/division
-                                numerator = int(match[0])
-                                denominator = int(match[1])
-                                percentage = (numerator / denominator) * 100
-                                if 0.001 <= percentage <= 50:
-                                    found_max_buys.append(f"{percentage:.3f}%")
+                                if match[1]:  # Multiplication/division
+                                    numerator = int(match[0])
+                                    denominator = int(match[1])
+                                    percentage = (numerator / denominator) * 100
+                                    if 0.001 <= percentage <= 50:
+                                        found_max_buys.append(f"{percentage:.3f}%")
+                                else:  # Avec decimals
+                                    value = int(match[0])
+                                    if total_supply_value:
+                                        # Calculer avec les vraies valeurs
+                                        real_value = value * (10 ** decimals_value)
+                                        real_total = total_supply_value * (10 ** decimals_value)
+                                        percentage = (real_value / real_total) * 100
+                                        if 0.001 <= percentage <= 50:
+                                            found_max_buys.append(f"{percentage:.3f}%")
                         else:
-                            # Pattern simple
+                            # Division simple
                             value = int(match)
-                            if value >= 1000 and total_supply_value:
-                                # Valeur fixe comme 250000 - calculer le %
-                                percentage = (value / total_supply_value) * 100
-                                if 0.001 <= percentage <= 50:
-                                    found_max_buys.append(f"{percentage:.3f}%")
-                            elif 2 <= value <= 1000:
-                                # Diviseur
+                            if 2 <= value <= 10000:
                                 percentage = 100 / value
                                 if percentage <= 50:
                                     found_max_buys.append(f"{percentage:.3f}%")
                     except (ValueError, IndexError, ZeroDivisionError):
                         continue
             
-            # TOUJOURS afficher les max buy
+            # 3. AFFICHAGE DES MAX BUY (TOUJOURS)
             result += "💰 MAX BUY LIMITS:\n"
             if found_max_buys:
-                # Supprimer les doublons mais garder l'ordre
+                # Supprimer les doublons et trier
                 seen = set()
                 unique_max_buys = []
                 for item in found_max_buys:
@@ -206,24 +233,31 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         seen.add(item)
                         unique_max_buys.append(item)
                 
+                # Trier par pourcentage
+                unique_max_buys.sort(key=lambda x: float(x.replace('%', '')))
+                
                 for max_buy in unique_max_buys[:3]:  # Max 3 résultats
                     result += f"• Max buy: {max_buy} of supply\n"
             else:
                 result += "• No max buy limits detected in source code\n"
             result += "\n"
             
+            # 4. MECANISMES ANTIBOT (séparés des max buy)
+            mechanisms_found = False
+            
             # Transfer delays
-            if "transferDelayEnabled" in source_code and "true" in source_code:
-                result += "⏱️ TRANSFER DELAYS:\n• Transfer delay enabled: true\n"
-                if "holderLastTransferTimestamp" in source_code:
+            if any(keyword in source_code.lower() for keyword in ["transferdelayenabled", "transfer_delay", "cooldown"]):
+                result += "⏱️ TRANSFER DELAYS:\n"
+                if "transferDelayEnabled" in source_code and "true" in source_code:
+                    result += "• Transfer delay enabled: true\n"
+                if "holderLastTransferTimestamp" in source_code or "cooldownTimer" in source_code:
                     result += "• 1 TX per block per wallet: true\n"
                 result += "\n"
                 mechanisms_found = True
             
             # Block limits
-            if "maxBuyTxsPerBlock" in source_code:
+            if any(keyword in source_code for keyword in ["maxBuyTxsPerBlock", "blockLimit", "txPerBlock"]):
                 result += "🚫 BLOCK LIMITS:\n"
-                import re
                 match = re.search(r'maxBuyTxsPerBlock.*?=.*?(\d+)', source_code)
                 if match:
                     result += f"• Max TXs per block: {match.group(1)}\n"
@@ -236,9 +270,8 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mechanisms_found = True
             
             # Blacklist mechanisms
-            if "blacklistCount" in source_code:
+            if any(keyword in source_code for keyword in ["blacklistCount", "blacklist", "botList"]):
                 result += "⚫ BLACKLIST:\n"
-                import re
                 match = re.search(r'blacklistCount.*?=.*?(\d+)', source_code)
                 if match:
                     result += f"• First {match.group(1)} buyers blacklisted\n"
@@ -250,10 +283,8 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mechanisms_found = True
             
             # Initial taxes
-            if "initialBuyTax" in source_code or "initialSellTax" in source_code:
+            if any(keyword in source_code for keyword in ["initialBuyTax", "initialSellTax", "launchTax"]):
                 result += "💰 INITIAL TAXES:\n"
-                import re
-                
                 match = re.search(r'initialBuyTax.*?=.*?(\d+)', source_code)
                 if match:
                     result += f"• Initial buy tax: {match.group(1)}%\n"
@@ -265,6 +296,21 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result += "\n"
                 mechanisms_found = True
             
+            # Anti-MEV / Anti-bot patterns
+            if any(keyword in source_code.lower() for keyword in ["antimev", "antibot", "botprotection", "maxgasprice"]):
+                result += "🛡️ ANTI-BOT PROTECTION:\n"
+                if "maxGasPrice" in source_code:
+                    match = re.search(r'maxGasPrice.*?=.*?(\d+)', source_code)
+                    if match:
+                        result += f"• Max gas price limit: {match.group(1)} gwei\n"
+                
+                if any(keyword in source_code.lower() for keyword in ["antibot", "botprotection"]):
+                    result += "• Anti-bot protection: enabled\n"
+                
+                result += "\n"
+                mechanisms_found = True
+            
+            # Message final
             if not mechanisms_found:
                 result += "✅ No ANTIBOT mechanisms detected\n"
                 result += "(Max buy limits are not antibot mechanisms)"
