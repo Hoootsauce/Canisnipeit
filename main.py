@@ -130,26 +130,25 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Patterns universels pour tous les types de contrats
             universal_patterns = [
-                # 1. Variables de max buy classiques
-                r'uint256.*?maxBuyAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
-                r'uint256.*?_maxBuyAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
-                r'uint256.*?maxTransactionAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
-                r'uint256.*?maxTxAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
+                # 1. Variables de max buy classiques (division simple)
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
                 
-                # 2. Assignments directs
-                r'maxBuyAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
-                r'_maxBuyAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
-                r'maxTransactionAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
-                r'_maxTransactionAmount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
+                # 2. Variables avec multiplication puis division : (totalSupply * X) / Y
+                r'uint256.*?(?:maxBuy|maxWallet|maxTransaction|maxTx).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
                 
-                # 3. Dans les constructeurs
-                r'constructor[^}]*?(?:maxBuy|_maxBuy|maxTransaction)[^}]*?(?:_totalSupply|MAX_SUPPLY)\s*/\s*(\d+)',
+                # 3. Assignments directs (division)
+                r'(?:maxBuy|maxWallet|maxTransaction|maxTx)Amount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
+                r'_(?:maxBuy|maxWallet|maxTransaction|maxTx)Amount\s*=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
                 
-                # 4. Patterns avec pourcentages en commentaires (mais validation stricte)
-                r'(?:maxBuy|_maxBuy|maxTransaction)[^=]*?=\s*(?:_totalSupply|MAX_SUPPLY)\s*/\s*(\d+)[^;]*?;//[^0-9]*?(\d+(?:\.\d+)?)%',
+                # 4. Assignments avec multiplication/division : maxBuy = (totalSupply * X) / Y
+                r'(?:maxBuy|maxWallet|maxTransaction|maxTx).*?=\s*\((?:_totalSupply|totalSupply\(\)|MAX_SUPPLY|initialTotalSupply)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
                 
-                # 5. Variables d'état initialisées
-                r'(?:maxBuy|maxTransaction).*?=\s*(?:_totalSupply|totalSupply\(\)|MAX_SUPPLY)\s*/\s*(\d+)',
+                # 5. Dans les constructeurs
+                r'constructor[^}]*?(?:maxBuy|maxWallet|maxTransaction)[^}]*?(?:_totalSupply|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)',
+                r'constructor[^}]*?(?:maxBuy|maxWallet|maxTransaction)[^}]*?\((?:_totalSupply|MAX_SUPPLY|initialTotalSupply)\s*\*\s*(\d+)\)\s*/\s*(\d+)',
+                
+                # 6. Patterns avec pourcentages en commentaires
+                r'(?:maxBuy|maxWallet|maxTransaction)[^=]*?=\s*(?:_totalSupply|MAX_SUPPLY|initialTotalSupply)\s*/\s*(\d+)[^;]*?;//[^0-9]*?(\d+(?:\.\d+)?)%',
             ]
             
             found_max_buys = []
@@ -158,13 +157,22 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE)
                 for match in matches:
                     try:
-                        if isinstance(match, tuple) and len(match) == 2:
-                            # Pattern avec commentaire de pourcentage
-                            divisor = int(match[0])
-                            percentage = float(match[1])
-                            # Validation : pourcentage réaliste (0.01% à 20%)
-                            if 0.01 <= percentage <= 20 and 5 <= divisor <= 10000:
-                                found_max_buys.append(f"{percentage}%")
+                        if isinstance(match, tuple):
+                            if len(match) == 3:
+                                # Pattern avec multiplication/division : (totalSupply * X) / Y
+                                numerator = int(match[0])
+                                denominator = int(match[1])
+                                percentage = (numerator / denominator) * 100
+                                # Validation : pourcentage réaliste (0.01% à 20%)
+                                if 0.01 <= percentage <= 20:
+                                    found_max_buys.append(f"{percentage:.2f}%")
+                            elif len(match) == 2:
+                                # Pattern avec commentaire de pourcentage
+                                divisor = int(match[0])
+                                percentage = float(match[1])
+                                # Validation : pourcentage réaliste (0.01% à 20%)
+                                if 0.01 <= percentage <= 20 and 5 <= divisor <= 10000:
+                                    found_max_buys.append(f"{percentage}%")
                         else:
                             # Pattern simple avec diviseur
                             divisor = int(match)
@@ -173,7 +181,7 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 percentage = 100 / divisor
                                 if percentage <= 20:  # Max 20% de supply
                                     found_max_buys.append(f"{percentage:.2f}%")
-                    except (ValueError, IndexError):
+                    except (ValueError, IndexError, ZeroDivisionError):
                         continue
             
             # Supprimer les doublons et prendre les 2 premiers résultats
