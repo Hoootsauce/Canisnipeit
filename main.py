@@ -3,6 +3,7 @@ print("🚀 SCRIPT STARTING...")
 import os
 import requests
 import threading
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -15,10 +16,18 @@ print("✅ Environment variables loaded")
 # Serveur de santé pour Render
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain; charset=utf-8')
-        self.end_headers()
-        self.wfile.write('Contract Analyzer Bot is running!'.encode('utf-8'))
+        if self.path == '/restart':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write('Restarting bot...'.encode('utf-8'))
+            # Force restart
+            os._exit(0)
+        else:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write('Contract Analyzer Bot is running!'.encode('utf-8'))
     
     def log_message(self, format, *args):
         # Désactive les logs HTTP pour éviter le spam
@@ -29,6 +38,25 @@ def start_health_server():
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
     print(f"🌐 Health server starting on port {port}...")
     server.serve_forever()
+
+# Keep-alive automatique
+async def keep_alive():
+    """Ping le serveur toutes les 10 minutes pour éviter la mise en veille"""
+    port = int(os.getenv('PORT', 8000))
+    
+    while True:
+        try:
+            await asyncio.sleep(600)  # 10 minutes
+            response = requests.get(f"http://localhost:{port}/health", timeout=30)
+            print(f"🔄 Keep-alive ping: {response.status_code}")
+        except Exception as e:
+            print(f"❌ Keep-alive error: {e}")
+
+def start_keep_alive():
+    """Démarre le keep-alive dans une boucle asyncio séparée"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(keep_alive())
 
 class ContractAnalyzer:
     def __init__(self, etherscan_api_key):
@@ -153,6 +181,10 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_a
 # Démarrer le serveur de santé en arrière-plan
 health_thread = threading.Thread(target=start_health_server, daemon=True)
 health_thread.start()
+
+# Démarrer le keep-alive en arrière-plan
+keep_alive_thread = threading.Thread(target=start_keep_alive, daemon=True)
+keep_alive_thread.start()
 
 print("🚀 Starting bot...")
 application.run_polling()
