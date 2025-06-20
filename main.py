@@ -13,30 +13,8 @@ class ContractAnalyzer:
         self.w3 = Web3(Web3.HTTPProvider(web3_provider_url))
         self.etherscan_base_url = "https://api.etherscan.io/api"
     
-    def get_token_name(self, contract_address):
-        """Get token name directly from contract"""
-        try:
-            name_abi = [{
-                "constant": True,
-                "inputs": [],
-                "name": "name",
-                "outputs": [{"name": "", "type": "string"}],
-                "type": "function"
-            }]
-            
-            contract = self.w3.eth.contract(address=contract_address, abi=name_abi)
-            token_name = contract.functions.name().call()
-            
-            if token_name and len(token_name.strip()) > 0:
-                return token_name.strip()
-                
-        except Exception as e:
-            print(f"Could not get token name: {e}")
-            
-        return None
-    
     def get_contract_info(self, contract_address):
-        """Get contract source code and token name"""
+        """Get contract source code only"""
         params = {
             'module': 'contract',
             'action': 'getsourcecode',
@@ -50,21 +28,8 @@ class ContractAnalyzer:
         if data['status'] != '1' or not data['result'][0]['SourceCode']:
             return None
         
-        source_code = data['result'][0]['SourceCode']
-        
-        # Try to get real token name
-        token_name = self.get_token_name(contract_address)
-        
-        if not token_name:
-            contract_name = data['result'][0]['ContractName']
-            if contract_name and contract_name not in ['Contract', 'ERC20', 'Token']:
-                token_name = contract_name
-            else:
-                token_name = f"Token-{contract_address[-4:].upper()}"
-        
         return {
-            'source_code': source_code,
-            'contract_name': token_name
+            'source_code': data['result'][0]['SourceCode']
         }
     
     def analyze_antibot_mechanisms(self, source_code):
@@ -261,18 +226,18 @@ Just send the contract address (0x...)"""
                 return
             
             data = self.analyzer.analyze_antibot_mechanisms(contract_info['source_code'])
-            response = self.build_response(contract_address, contract_info['contract_name'], data)
+            response = self.build_response(contract_address, data)
             
             await processing_msg.edit_text(response)
             
         except Exception as e:
             await processing_msg.edit_text("❌ Error analyzing contract. Please try again.")
     
-    def build_response(self, contract_address, contract_name, data):
+    def build_response(self, contract_address, data):
         """Build response message with raw data"""
         etherscan_link = f"https://etherscan.io/address/{contract_address}#code"
         
-        response = f"📊 Contract Analysis - {contract_name}\n🔗 Etherscan: {etherscan_link}\n\n"
+        response = f"📊 Contract Analysis\n🔗 Etherscan: {etherscan_link}\n\n"
         
         if not data:
             response += "✅ No antibot mechanisms detected"
