@@ -2,6 +2,8 @@ print("🚀 SCRIPT STARTING...")
 
 import os
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -9,6 +11,24 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
 
 print("✅ Environment variables loaded")
+
+# Serveur de santé pour Render
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'🤖 Contract Analyzer Bot is running!')
+    
+    def log_message(self, format, *args):
+        # Désactive les logs HTTP pour éviter le spam
+        pass
+
+def start_health_server():
+    port = int(os.getenv('PORT', 8000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    print(f"🌐 Health server starting on port {port}...")
+    server.serve_forever()
 
 class ContractAnalyzer:
     def __init__(self, etherscan_api_key):
@@ -129,6 +149,10 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 application.add_handler(CommandHandler("start", start_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_address))
+
+# Démarrer le serveur de santé en arrière-plan
+health_thread = threading.Thread(target=start_health_server, daemon=True)
+health_thread.start()
 
 print("🚀 Starting bot...")
 application.run_polling()
