@@ -123,113 +123,96 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result += "\n"
                 mechanisms_found = True
             
-            # Max buy limits - détection dans le code source
+            # Max buy/wallet limits - détection du PREMIER BLOC seulement
             max_buy_found = False
             
-            # Chercher les valeurs hardcodées dans le constructeur ou les variables d'initialisation
             import re
             
-            # Patterns pour les max buy dans le code source (valeurs hardcodées)
-            constructor_patterns = [
-                # Dans le constructeur avec pourcentages directs
-                r'maxBuyAmount\s*=\s*_totalSupply\s*\*\s*(\d+)\s*/\s*100',
-                r'_maxBuyAmount\s*=\s*_totalSupply\s*\*\s*(\d+)\s*/\s*100',
-                r'maxTransactionAmount\s*=\s*_totalSupply\s*\*\s*(\d+)\s*/\s*100',
+            # Chercher spécifiquement les patterns du premier bloc/première condition
+            first_block_patterns = [
+                # Pattern pour la première condition temporelle (< 60 secondes)
+                r'if\s*\([^}]*?<\s*60[^}]*?\)[^}]*?MAX_SUPPLY\s*/\s*(\d+)',
+                r'if\s*\([^}]*?<\s*60[^}]*?\)[^}]*?_totalSupply\s*/\s*(\d+)',
                 
-                # Avec division directe 
-                r'maxBuyAmount\s*=\s*_totalSupply\s*/\s*(\d+)',
-                r'_maxBuyAmount\s*=\s*_totalSupply\s*/\s*(\d+)',
-                r'maxTransactionAmount\s*=\s*_totalSupply\s*/\s*(\d+)',
+                # Pattern avec commentaire de pourcentage + première condition
+                r'//.*?(\d+(?:\.\d+)?)%[^}]*?\n[^}]*?if[^}]*?<\s*60[^}]*?MAX_SUPPLY\s*/\s*(\d+)',
                 
-                # Valeurs fixes dans le constructeur
-                r'maxBuyAmount\s*=\s*(\d+)\s*\*\s*10\*\*(\d+)',
-                r'_maxBuyAmount\s*=\s*(\d+)\s*\*\s*10\*\*(\d+)',
+                # Patterns pour les premiers returns dans les fonctions temporelles
+                r'_diffSeconds\s*<\s*60[^}]*?MAX_SUPPLY\s*/\s*(\d+)[^}]*?//.*?(\d+(?:\.\d+)?)%',
+                r'_diffSeconds\s*<\s*60[^}]*?_maxWallet\s*=\s*MAX_SUPPLY\s*/\s*(\d+)',
                 
-                # Patterns avec commentaires de pourcentage
-                r'//.*?(\d+)%.*?\n.*?maxBuyAmount\s*=',
-                r'/\*.*?(\d+)%.*?\*/.*?maxBuyAmount\s*=',
+                # Pattern pour block.number == startBlock (premier bloc)
+                r'block\.number\s*==\s*startBlock[^}]*?MAX_SUPPLY\s*/\s*(\d+)',
+                r'block\.number\s*==\s*startBlock[^}]*?_totalSupply\s*/\s*(\d+)',
                 
-                # Patterns pour les tokens typiques avec 1%, 2%, 3% etc
-                r'maxBuyAmount\s*=\s*totalSupply\(\)\s*/\s*(\d+)',
-                r'_maxBuyAmount\s*=\s*totalSupply\(\)\s*/\s*(\d+)',
+                # Patterns pour le très début du trading
+                r'if\s*\([^}]*?diffSeconds\s*<\s*60[^}]*?\)[^}]*?MAX_SUPPLY\s*/\s*(\d+)',
+                r'if\s*\([^}]*?_diffSeconds\s*<\s*60[^}]*?\)[^}]*?MAX_SUPPLY\s*/\s*(\d+)',
                 
-                # Variables déclarées avec des fractions du total supply
-                r'uint256.*?maxBuy.*?=\s*_totalSupply\s*/\s*(\d+)',
-                r'uint256.*?_maxBuy.*?=\s*_totalSupply\s*/\s*(\d+)',
+                # Patterns avec les premières conditions (plus strictes)
+                r'if\s*\([^}]*?<\s*(?:60|1\s*\*\s*60)[^}]*?\)[^}]*?/\s*(\d+)[^}]*?//.*?(\d+(?:\.\d+)?)%'
             ]
             
-            # Chercher dans le code source
-            for pattern in constructor_patterns:
-                matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE)
+            for pattern in first_block_patterns:
+                matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE | re.DOTALL)
                 if matches:
-                    if len(matches[0]) == 2:  # Pattern avec decimals (comme 2 * 10**18)
-                        base_value = int(matches[0][0])
-                        # C'est probablement un pourcentage si base_value < 100
-                        if base_value <= 100:
-                            result += "💰 MAX BUY LIMITS:\n"
-                            result += f"• Max buy: {base_value}% of supply (hardcoded)\n"
-                            max_buy_found = True
-                            break
-                    else:
-                        value = int(matches[0])
-                        result += "💰 MAX BUY LIMITS:\n"
-                        
-                        # Si division par X, c'est 100/X %
-                        if '/\s*(\d+)' in pattern:
-                            percentage = 100 / value
-                            result += f"• Max buy: {percentage:.1f}% of supply (1/{value} of total)\n"
-                        # Si multiplication par X / 100, c'est X%
-                        elif '\*\s*(\d+)\s*/\s*100' in pattern:
-                            result += f"• Max buy: {value}% of supply (hardcoded)\n"
+                    for match in matches:
+                        if isinstance(match, tuple) and len(match) == 2:
+                            # Pattern avec pourcentage dans commentaire
+                            try:
+                                divisor = int(match[1])
+                                percentage = float(match[0])
+                                if 10 <= divisor <= 2000:  # Diviseurs réalistes
+                                    result += "💰 MAX BUY LIMITS:\n"
+                                    result += f"• Initial max buy: {percentage}% of supply (first block)\n"
+                                    max_buy_found = True
+                                    break
+                            except:
+                                continue
                         else:
-                            result += f"• Max buy: {value}% of supply (hardcoded)\n"
-                        
-                        max_buy_found = True
+                            # Pattern simple avec diviseur
+                            try:
+                                divisor = int(match)
+                                if 10 <= divisor <= 2000:  # Éviter les faux positifs
+                                    percentage = 100 / divisor
+                                    result += "💰 MAX BUY LIMITS:\n"
+                                    result += f"• Initial max buy: {percentage:.2f}% of supply (first block)\n"
+                                    max_buy_found = True
+                                    break
+                            except:
+                                continue
+                    
+                    if max_buy_found:
                         break
             
-            # Si pas trouvé, chercher des patterns plus génériques
+            # Si pas trouvé avec les patterns temporels, chercher les patterns standards du premier bloc
             if not max_buy_found:
-                # Chercher des commentaires avec des pourcentages près des max buy
-                comment_patterns = [
-                    r'//.*?(\d+)%.*?max.*?buy',
-                    r'/\*.*?(\d+)%.*?max.*?buy.*?\*/',
-                    r'//.*?max.*?buy.*?(\d+)%',
-                    r'/\*.*?max.*?buy.*?(\d+)%.*?\*/'
+                simple_first_patterns = [
+                    # Constructeur avec max buy initial
+                    r'constructor[^}]*?maxBuyAmount\s*=\s*_totalSupply\s*/\s*(\d+)',
+                    r'constructor[^}]*?_maxBuyAmount\s*=\s*_totalSupply\s*/\s*(\d+)',
+                    
+                    # Variables initiales avec MAX_SUPPLY
+                    r'uint256.*?maxBuy.*?=\s*MAX_SUPPLY\s*/\s*(\d+)',
+                    r'uint256.*?_maxBuy.*?=\s*MAX_SUPPLY\s*/\s*(\d+)',
+                    
+                    # Première condition dans _update ou transfer
+                    r'function\s+_update[^}]*?MAX_SUPPLY\s*/\s*(\d+)[^}]*?(?:first|initial|start)',
                 ]
                 
-                for pattern in comment_patterns:
-                    matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE)
+                for pattern in simple_first_patterns:
+                    matches = re.findall(pattern, source_code, re.IGNORECASE | re.MULTILINE | re.DOTALL)
                     if matches:
-                        percentage = int(matches[0])
-                        result += "💰 MAX BUY LIMITS:\n"
-                        result += f"• Max buy: {percentage}% of supply (from comments)\n"
-                        max_buy_found = True
-                        break
-            
-            # Chercher des patterns typiques dans les tokens modernes
-            if not max_buy_found:
-                # Beaucoup de tokens utilisent des fractions standard
-                standard_fractions = [
-                    r'maxBuyAmount\s*=\s*_totalSupply\s*/\s*50',  # 2%
-                    r'maxBuyAmount\s*=\s*_totalSupply\s*/\s*100', # 1%
-                    r'maxBuyAmount\s*=\s*_totalSupply\s*/\s*33',  # ~3%
-                    r'maxBuyAmount\s*=\s*_totalSupply\s*/\s*25',  # 4%
-                    r'_maxBuyAmount\s*=\s*_totalSupply\s*/\s*50',
-                    r'_maxBuyAmount\s*=\s*_totalSupply\s*/\s*100',
-                    r'_maxBuyAmount\s*=\s*_totalSupply\s*/\s*33',
-                    r'_maxBuyAmount\s*=\s*_totalSupply\s*/\s*25'
-                ]
-                
-                fraction_map = {50: "2%", 100: "1%", 33: "3%", 25: "4%", 20: "5%"}
-                
-                for pattern in standard_fractions:
-                    if re.search(pattern, source_code, re.IGNORECASE):
-                        divisor = int(re.search(r'/\s*(\d+)', pattern).group(1))
-                        percentage = fraction_map.get(divisor, f"{100/divisor:.1f}%")
-                        result += "💰 MAX BUY LIMITS:\n"
-                        result += f"• Max buy: {percentage} of supply (1/{divisor} of total)\n"
-                        max_buy_found = True
-                        break
+                        try:
+                            divisor = int(matches[0])
+                            if 10 <= divisor <= 2000:
+                                percentage = 100 / divisor
+                                result += "💰 MAX BUY LIMITS:\n"
+                                result += f"• Initial max buy: {percentage:.2f}% of supply (first block)\n"
+                                max_buy_found = True
+                                break
+                        except:
+                            continue
             
             if max_buy_found:
                 result += "\n"
