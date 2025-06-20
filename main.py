@@ -14,39 +14,45 @@ class ContractAnalyzer:
         self.etherscan_base_url = "https://api.etherscan.io/api"
     
     def get_contract_info(self, contract_address):
-        """Get contract source code and basic info from Etherscan"""
-        params = {
+        """Get contract source code and token info from Etherscan"""
+        # Get contract source code
+        params_contract = {
             'module': 'contract',
             'action': 'getsourcecode',
             'address': contract_address,
             'apikey': self.etherscan_api_key
         }
         
-        response = requests.get(self.etherscan_base_url, params=params)
+        response = requests.get(self.etherscan_base_url, params=params_contract)
         data = response.json()
         
-        if data['status'] == '1' and data['result'][0]['SourceCode']:
-            source_code = data['result'][0]['SourceCode']
-            contract_name = data['result'][0]['ContractName']
-            
-            # Try to extract token name from source code if contract name is generic
-            if not contract_name or contract_name in ['Contract', 'Token']:
-                # Look for token name in constructor or name function
-                name_match = re.search(r'name.*?=.*?"([^"]+)"', source_code, re.IGNORECASE)
-                if name_match:
-                    contract_name = name_match.group(1)
-                else:
-                    # Look for contract declaration
-                    contract_match = re.search(r'contract\s+(\w+)', source_code, re.IGNORECASE)
-                    if contract_match:
-                        contract_name = contract_match.group(1)
-            
-            contract_info = {
-                'source_code': source_code,
-                'contract_name': contract_name or 'Unknown'
-            }
-            return contract_info
-        return None
+        if data['status'] != '1' or not data['result'][0]['SourceCode']:
+            return None
+        
+        source_code = data['result'][0]['SourceCode']
+        
+        # Get token info (name, symbol)
+        params_token = {
+            'module': 'token',
+            'action': 'tokeninfo',
+            'contractaddress': contract_address,
+            'apikey': self.etherscan_api_key
+        }
+        
+        token_response = requests.get(self.etherscan_base_url, params=params_token)
+        token_data = token_response.json()
+        
+        token_name = "Unknown"
+        if token_data['status'] == '1' and token_data['result']:
+            token_name = token_data['result'][0]['tokenName']
+            if not token_name:
+                token_name = token_data['result'][0]['symbol'] or "Unknown"
+        
+        contract_info = {
+            'source_code': source_code,
+            'contract_name': token_name
+        }
+        return contract_info
     
     def analyze_antibot_mechanisms(self, source_code):
         """Analyze antibot mechanisms - RAW DATA ONLY"""
