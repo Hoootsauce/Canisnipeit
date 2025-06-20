@@ -1,7 +1,21 @@
-def get_token_name(self, contract_address):
+import os
+import re
+import requests
+import threading
+import time
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from web3 import Web3
+
+class ContractAnalyzer:
+    def __init__(self, etherscan_api_key, web3_provider_url):
+        self.etherscan_api_key = etherscan_api_key
+        self.w3 = Web3(Web3.HTTPProvider(web3_provider_url))
+        self.etherscan_base_url = "https://api.etherscan.io/api"
+    
+    def get_token_name(self, contract_address):
         """Get token name directly from contract"""
         try:
-            # Standard ERC20 name() function ABI
             name_abi = [{
                 "constant": True,
                 "inputs": [],
@@ -19,24 +33,10 @@ def get_token_name(self, contract_address):
         except Exception as e:
             print(f"Could not get token name: {e}")
             
-        return Noneimport os
-import re
-import requests
-import threading
-import time
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from web3 import Web3
-
-class ContractAnalyzer:
-    def __init__(self, etherscan_api_key, web3_provider_url):
-        self.etherscan_api_key = etherscan_api_key
-        self.w3 = Web3(Web3.HTTPProvider(web3_provider_url))
-        self.etherscan_base_url = "https://api.etherscan.io/api"
+        return None
     
     def get_contract_info(self, contract_address):
         """Get contract source code and token name"""
-        # Get contract source code
         params = {
             'module': 'contract',
             'action': 'getsourcecode',
@@ -56,28 +56,16 @@ class ContractAnalyzer:
         token_name = self.get_token_name(contract_address)
         
         if not token_name:
-            # Fallback to contract name or address suffix
             contract_name = data['result'][0]['ContractName']
             if contract_name and contract_name not in ['Contract', 'ERC20', 'Token']:
                 token_name = contract_name
             else:
                 token_name = f"Token-{contract_address[-4:].upper()}"
         
-        contract_info = {
+        return {
             'source_code': source_code,
             'contract_name': token_name
         }
-        return contract_inforactName'] or "Token"
-        
-        # Clean up the contract name if it's too generic
-        if contract_name in ['Contract', 'ERC20', 'Token']:
-            contract_name = f"Token-{contract_address[-4:]}"
-        
-        contract_info = {
-            'source_code': source_code,
-            'contract_name': contract_name
-        }
-        return contract_info
     
     def analyze_antibot_mechanisms(self, source_code):
         """Analyze antibot mechanisms - RAW DATA ONLY"""
@@ -99,29 +87,24 @@ class ContractAnalyzer:
         """Extract initial tax data"""
         data = {}
         
-        # Initial buy tax
         match = re.search(r'initialBuyTax.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['initial_buy_tax'] = int(match.group(1))
         
-        # Initial sell tax
         match = re.search(r'initialSellTax.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['initial_sell_tax'] = int(match.group(1))
         
-        # Tax reduction after X buys
         match = re.search(r'buyCount.*?>=.*?(\d+).*?(?:buyTax|buyFee).*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['tax_reduces_after_buys'] = int(match.group(1))
             data['final_buy_tax'] = int(match.group(2))
         
-        # Tax reduction after X blocks
         match = re.search(r'block\.number.*?>=.*?launchBlock.*?\+.*?(\d+).*?(?:buyTax|buyFee).*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['tax_reduces_after_blocks'] = int(match.group(1))
             data['final_buy_tax_after_blocks'] = int(match.group(2))
         
-        # Detect if taxes reduce to zero specifically
         if re.search(r'buyCount.*?(?:buyTax|buyFee).*?=.*?0', source_code, re.IGNORECASE):
             data['taxes_go_to_zero'] = True
         
@@ -131,17 +114,14 @@ class ContractAnalyzer:
         """Extract block-based limitations"""
         data = {}
         
-        # Max transactions per block
         match = re.search(r'maxBuyTxsPerBlock.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['max_txs_per_block'] = int(match.group(1))
         
-        # Max transactions per origin per block
         match = re.search(r'maxBuyTxsPerBlockPerOrigin.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['max_txs_per_origin_per_block'] = int(match.group(1))
         
-        # Block tracking mappings
         if re.search(r'mapping.*block.*uint256', source_code, re.IGNORECASE):
             data['has_block_tracking'] = True
         
@@ -151,15 +131,12 @@ class ContractAnalyzer:
         """Extract transfer delay mechanisms"""
         data = {}
         
-        # Transfer delay enabled
         if re.search(r'transferDelayEnabled.*?=.*?true', source_code, re.IGNORECASE):
             data['transfer_delay_enabled'] = True
         
-        # Holder last transfer timestamp (1 TX per block per wallet)
         if re.search(r'holderLastTransferTimestamp', source_code, re.IGNORECASE):
             data['one_tx_per_block_per_wallet'] = True
         
-        # Cooldown timer
         match = re.search(r'cooldownTimer.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['cooldown_timer_seconds'] = int(match.group(1))
@@ -170,12 +147,10 @@ class ContractAnalyzer:
         """Extract blacklist mechanisms - SIMPLIFIED"""
         data = {}
         
-        # Blacklist count (most important)
         match = re.search(r'blacklistCount.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['first_buyers_blacklisted'] = int(match.group(1))
         
-        # Current buy count tracking
         if re.search(r'currentBuyCount', source_code, re.IGNORECASE):
             data['has_buy_count_tracking'] = True
         
@@ -185,12 +160,10 @@ class ContractAnalyzer:
         """Extract timing-based restrictions"""
         data = {}
         
-        # Launch block
         match = re.search(r'launchBlock.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['launch_block'] = int(match.group(1))
         
-        # Protected blocks
         match = re.search(r'protectedBlocks.*?=.*?(\d+)', source_code, re.IGNORECASE)
         if match:
             data['protected_blocks'] = int(match.group(1))
@@ -201,7 +174,6 @@ class ContractAnalyzer:
         """Extract amount-based limitations and convert to % of supply"""
         data = {}
         
-        # Get total supply first
         total_supply = None
         supply_match = re.search(r'(?:totalSupply|initialTotalSupply).*?=.*?(\d+).*?\*.*?10\*\*.*?(\d+)', source_code, re.IGNORECASE)
         if supply_match:
@@ -209,7 +181,6 @@ class ContractAnalyzer:
             decimals = int(supply_match.group(2))
             total_supply = base_amount * (10 ** decimals)
         
-        # Max buy amount
         max_buy_match = re.search(r'maxBuyAmount.*?=.*?(?:\(.*?)?(\d+).*?\*.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
         if max_buy_match and total_supply:
             numerator = int(max_buy_match.group(1))
@@ -219,7 +190,6 @@ class ContractAnalyzer:
             percentage = (max_buy_amount / total_supply) * 100
             data['max_buy_percent'] = round(percentage, 2)
         
-        # Max wallet
         max_wallet_match = re.search(r'maxWallet.*?=.*?(?:\(.*?)?(\d+).*?\*.*?(\d+).*?\/.*?(\d+)', source_code, re.IGNORECASE)
         if max_wallet_match and total_supply:
             numerator = int(max_wallet_match.group(1))
@@ -230,10 +200,6 @@ class ContractAnalyzer:
             data['max_wallet_percent'] = round(percentage, 2)
         
         return data
-    
-    def _extract_honeypot_flags(self, source_code):
-        """This function is removed"""
-        return []
 
 class TelegramBot:
     def __init__(self, bot_token, etherscan_api_key, web3_provider_url):
@@ -249,7 +215,6 @@ class TelegramBot:
                 time.sleep(600)  # 10 minutes
                 print("🏓 Keepalive ping...")
         
-        # Start keepalive thread
         keepalive_thread = threading.Thread(target=keepalive_worker, daemon=True)
         keepalive_thread.start()
         print("🏓 Keepalive thread started")
@@ -270,7 +235,6 @@ Send me a contract address and I'll extract:
 • Blacklist mechanisms
 • Timing restrictions
 • Amount limits
-• Honeypot flags
 
 Just send the contract address (0x...)"""
         
@@ -280,7 +244,6 @@ Just send the contract address (0x...)"""
         """Handle contract address input"""
         text = update.message.text.strip()
         
-        # Check if it's a valid Ethereum address
         if len(text) == 42 and text.startswith('0x'):
             await self.analyze_contract(update, text)
         else:
@@ -315,7 +278,6 @@ Just send the contract address (0x...)"""
             response += "✅ No antibot mechanisms detected"
             return response
         
-        # Initial Taxes
         if 'initial_taxes' in data:
             response += "💰 INITIAL TAXES:\n"
             taxes = data['initial_taxes']
@@ -333,7 +295,6 @@ Just send the contract address (0x...)"""
                 response += f"• Taxes go to 0%: {taxes['taxes_go_to_zero']}\n"
             response += "\n"
         
-        # Block Limits
         if 'block_limits' in data:
             response += "🚫 BLOCK LIMITS:\n"
             limits = data['block_limits']
@@ -345,7 +306,6 @@ Just send the contract address (0x...)"""
                 response += f"• Has block tracking: {limits['has_block_tracking']}\n"
             response += "\n"
         
-        # Transfer Delays
         if 'transfer_delays' in data:
             response += "⏱️ TRANSFER DELAYS:\n"
             delays = data['transfer_delays']
@@ -357,7 +317,6 @@ Just send the contract address (0x...)"""
                 response += f"• Cooldown: {delays['cooldown_timer_seconds']} seconds\n"
             response += "\n"
         
-        # Blacklist Mechanisms
         if 'blacklist_mechanisms' in data:
             response += "⚫ BLACKLIST:\n"
             blacklist = data['blacklist_mechanisms']
@@ -367,7 +326,6 @@ Just send the contract address (0x...)"""
                 response += f"• Buy count tracking: {blacklist['has_buy_count_tracking']}\n"
             response += "\n"
         
-        # Timing Restrictions
         if 'timing_restrictions' in data:
             response += "⏰ TIMING:\n"
             timing = data['timing_restrictions']
@@ -377,7 +335,6 @@ Just send the contract address (0x...)"""
                 response += f"• Protected blocks: {timing['protected_blocks']}\n"
             response += "\n"
         
-        # Amount Limits
         if 'amount_limits' in data:
             response += "💎 AMOUNT LIMITS:\n"
             amounts = data['amount_limits']
@@ -395,9 +352,7 @@ Just send the contract address (0x...)"""
         print("🏓 Keepalive enabled - bot will stay online 24/7")
         self.application.run_polling()
 
-# Main execution
 if __name__ == "__main__":
-    # Get environment variables
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
     WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL')
