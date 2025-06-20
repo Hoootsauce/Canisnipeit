@@ -14,43 +14,30 @@ class ContractAnalyzer:
         self.etherscan_base_url = "https://api.etherscan.io/api"
     
     def get_contract_info(self, contract_address):
-        """Get contract source code and token info from Etherscan"""
-        # Get contract source code
-        params_contract = {
+        """Get contract source code and basic info from Etherscan"""
+        params = {
             'module': 'contract',
             'action': 'getsourcecode',
             'address': contract_address,
             'apikey': self.etherscan_api_key
         }
         
-        response = requests.get(self.etherscan_base_url, params=params_contract)
+        response = requests.get(self.etherscan_base_url, params=params)
         data = response.json()
         
         if data['status'] != '1' or not data['result'][0]['SourceCode']:
             return None
         
         source_code = data['result'][0]['SourceCode']
+        contract_name = data['result'][0]['ContractName'] or "Token"
         
-        # Get token info (name, symbol)
-        params_token = {
-            'module': 'token',
-            'action': 'tokeninfo',
-            'contractaddress': contract_address,
-            'apikey': self.etherscan_api_key
-        }
-        
-        token_response = requests.get(self.etherscan_base_url, params=params_token)
-        token_data = token_response.json()
-        
-        token_name = "Unknown"
-        if token_data['status'] == '1' and token_data['result']:
-            token_name = token_data['result'][0]['tokenName']
-            if not token_name:
-                token_name = token_data['result'][0]['symbol'] or "Unknown"
+        # Clean up the contract name if it's too generic
+        if contract_name in ['Contract', 'ERC20', 'Token']:
+            contract_name = f"Token-{contract_address[-4:]}"
         
         contract_info = {
             'source_code': source_code,
-            'contract_name': token_name
+            'contract_name': contract_name
         }
         return contract_info
     
