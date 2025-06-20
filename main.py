@@ -1,4 +1,25 @@
-import os
+def get_token_name(self, contract_address):
+        """Get token name directly from contract"""
+        try:
+            # Standard ERC20 name() function ABI
+            name_abi = [{
+                "constant": True,
+                "inputs": [],
+                "name": "name",
+                "outputs": [{"name": "", "type": "string"}],
+                "type": "function"
+            }]
+            
+            contract = self.w3.eth.contract(address=contract_address, abi=name_abi)
+            token_name = contract.functions.name().call()
+            
+            if token_name and len(token_name.strip()) > 0:
+                return token_name.strip()
+                
+        except Exception as e:
+            print(f"Could not get token name: {e}")
+            
+        return Noneimport os
 import re
 import requests
 import threading
@@ -14,7 +35,8 @@ class ContractAnalyzer:
         self.etherscan_base_url = "https://api.etherscan.io/api"
     
     def get_contract_info(self, contract_address):
-        """Get contract source code and basic info from Etherscan"""
+        """Get contract source code and token name"""
+        # Get contract source code
         params = {
             'module': 'contract',
             'action': 'getsourcecode',
@@ -29,7 +51,23 @@ class ContractAnalyzer:
             return None
         
         source_code = data['result'][0]['SourceCode']
-        contract_name = data['result'][0]['ContractName'] or "Token"
+        
+        # Try to get real token name
+        token_name = self.get_token_name(contract_address)
+        
+        if not token_name:
+            # Fallback to contract name or address suffix
+            contract_name = data['result'][0]['ContractName']
+            if contract_name and contract_name not in ['Contract', 'ERC20', 'Token']:
+                token_name = contract_name
+            else:
+                token_name = f"Token-{contract_address[-4:].upper()}"
+        
+        contract_info = {
+            'source_code': source_code,
+            'contract_name': token_name
+        }
+        return contract_inforactName'] or "Token"
         
         # Clean up the contract name if it's too generic
         if contract_name in ['Contract', 'ERC20', 'Token']:
