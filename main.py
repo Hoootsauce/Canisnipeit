@@ -3,7 +3,7 @@ print("🚀 SCRIPT STARTING...")
 import os
 import requests
 import threading
-import asyncio
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -40,23 +40,28 @@ def start_health_server():
     server.serve_forever()
 
 # Keep-alive automatique
-async def keep_alive():
+def keep_alive():
     """Ping le serveur toutes les 10 minutes pour éviter la mise en veille"""
-    port = int(os.getenv('PORT', 8000))
+    hostname = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+    if not hostname:
+        print("⚠️ RENDER_EXTERNAL_HOSTNAME not found, keep-alive disabled")
+        return
+    
+    url = f"https://{hostname}"
     
     while True:
         try:
-            await asyncio.sleep(600)  # 10 minutes
-            response = requests.get(f"http://localhost:{port}/health", timeout=30)
-            print(f"🔄 Keep-alive ping: {response.status_code}")
+            time.sleep(600)  # 10 minutes
+            response = requests.get(url, timeout=30)
+            print(f"🏓 Keep-alive ping to {url}")
+            print(f"✅ Keep-alive successful: {response.status_code}")
         except Exception as e:
-            print(f"❌ Keep-alive error: {e}")
+            print(f"⚠️ Keep-alive failed: {e}")
 
 def start_keep_alive():
-    """Démarre le keep-alive dans une boucle asyncio séparée"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(keep_alive())
+    """Démarre le keep-alive dans un thread séparé"""
+    import time
+    keep_alive()
 
 class ContractAnalyzer:
     def __init__(self, etherscan_api_key):
@@ -186,5 +191,6 @@ health_thread.start()
 keep_alive_thread = threading.Thread(target=start_keep_alive, daemon=True)
 keep_alive_thread.start()
 
+print("🔄 Keep-alive system activated (ping every 10 minutes)")
 print("🚀 Starting bot...")
 application.run_polling()
