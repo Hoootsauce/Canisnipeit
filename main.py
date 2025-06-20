@@ -186,8 +186,10 @@ class TelegramBot:
     
     def setup_handlers(self):
         """Set up bot handlers"""
+        print("📝 Setting up handlers...")
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_address))
+        print("✅ Handlers set up successfully")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command"""
@@ -318,14 +320,28 @@ Just send the contract address (0x...)"""
         self.application.run_polling()
 
 if __name__ == "__main__":
+    print("🔍 Starting bot initialization...")
+    
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
     WEB3_PROVIDER_URL = os.getenv('WEB3_PROVIDER_URL')
+    
+    print(f"📋 Environment check:")
+    print(f"- BOT_TOKEN: {'✅ Set' if BOT_TOKEN else '❌ Missing'}")
+    print(f"- ETHERSCAN_API_KEY: {'✅ Set' if ETHERSCAN_API_KEY else '❌ Missing'}")
+    print(f"- WEB3_PROVIDER_URL: {'✅ Set' if WEB3_PROVIDER_URL else '❌ Missing'}")
     
     if not all([BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL]):
         print("❌ Missing environment variables!")
         print("Required: BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL")
         exit(1)
     
-    bot = TelegramBot(BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL)
-    bot.run()
+    print("🚀 Creating bot instance...")
+    try:
+        bot = TelegramBot(BOT_TOKEN, ETHERSCAN_API_KEY, WEB3_PROVIDER_URL)
+        print("✅ Bot instance created successfully")
+        bot.run()
+    except Exception as e:
+        print(f"❌ Error creating bot: {e}")
+        import traceback
+        traceback.print_exc()
